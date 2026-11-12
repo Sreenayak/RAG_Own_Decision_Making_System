@@ -40,9 +40,24 @@ def chat():
     question = payload.get("question")
     if not isinstance(question, str) or not question.strip():
         return jsonify({"error": "Type a question first."}), 400
+    if len(question) > 4000:
+        return jsonify({"error": "Keep questions under 4,000 characters."}), 400
+
+    history = payload.get("history", [])
+    if not isinstance(history, list):
+        return jsonify({"error": "Conversation history must be a list."}), 400
+    history = history[-8:]
+    if any(
+        not isinstance(message, dict)
+        or message.get("role") not in {"user", "assistant"}
+        or not isinstance(message.get("content"), str)
+        or len(message["content"]) > 4000
+        for message in history
+    ):
+        return jsonify({"error": "Conversation history contains an invalid message."}), 400
 
     try:
-        result = get_pipeline().answer(question.strip())
+        result = get_pipeline().answer(question.strip(), history=history)
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
     except RuntimeError as error:

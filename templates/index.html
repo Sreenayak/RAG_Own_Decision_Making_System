@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -12,7 +12,7 @@
     <aside class="sidebar" id="sidebar">
       <a class="brand" href="/" aria-label="Smash AI home">
         <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32"><path d="M17.9 3.5 7.7 17h6.9l-1.1 11.5L24.3 14h-7.1l.7-10.5Z"/></svg>
+          <svg viewBox="0 0 32 32"><path d="M16 2.8 19.2 12.8 29.2 16l-10 3.2L16 29.2l-3.2-10L2.8 16l10-3.2L16 2.8Z"/><circle cx="16" cy="16" r="2.8"/></svg>
         </span>
         <span class="brand-name">Smash <b>AI</b></span>
       </a>
@@ -20,21 +20,25 @@
       <button class="new-chat" id="new-chat" type="button">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
         <span>New chat</span>
-        <kbd>Ctrl K</kbd>
       </button>
 
-      <div class="sidebar-label">YOUR SPACE</div>
-      <div class="space-card">
-        <span class="space-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5v-15Z"/><path d="M4 18.5A2.5 2.5 0 0 1 6.5 16H20M8 7h8M8 10h6"/></svg>
-        </span>
-        <span><b>My knowledge</b><small>Ask. Explore. Understand.</small></span>
-      </div>
+      <label class="history-search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg>
+        <input id="chat-search" type="search" placeholder="Search conversations" autocomplete="off">
+        <kbd>Ctrl K</kbd>
+      </label>
+
+      <div class="sidebar-label">RECENT CHATS</div>
+      <nav class="chat-list" id="chat-list" aria-label="Recent conversations"></nav>
+      <div class="history-empty" id="history-empty">Your conversations will appear here.</div>
 
       <div class="sidebar-bottom">
         <span class="local-indicator"></span>
-        <span>Private workspace</span>
-        <span class="sidebar-version">LOCAL</span>
+        <span>Saved in this browser</span>
+        <button class="sidebar-icon-button" id="theme-toggle" type="button" aria-label="Switch to dark theme" title="Switch theme">
+          <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/></svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.4A8.4 8.4 0 0 1 8.6 3.8 8.5 8.5 0 1 0 20.2 15.4Z"/></svg>
+        </button>
       </div>
     </aside>
 
@@ -43,14 +47,20 @@
         <button class="mobile-menu" id="mobile-menu" type="button" aria-label="Toggle menu">
           <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
-        <div class="topbar-brand">Smash AI <span class="topbar-divider">/</span> <span class="topbar-muted">Chat</span></div>
-        <div class="online-status"><span></span> Ready</div>
+        <div class="topbar-brand">Smash AI <span class="topbar-divider">/</span> <span class="topbar-muted" id="chat-title">New chat</span></div>
+        <div class="topbar-actions">
+          <button class="toolbar-button" id="export-chat" type="button" disabled title="Export conversation" aria-label="Export conversation">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+            <span>Export</span>
+          </button>
+          <div class="online-status"><span></span> Ready</div>
+        </div>
       </header>
 
       <main class="chat-scroll" id="chat-scroll">
         <section class="welcome" id="welcome">
           <div class="welcome-orb" aria-hidden="true">
-            <svg viewBox="0 0 32 32"><path d="M17.9 3.5 7.7 17h6.9l-1.1 11.5L24.3 14h-7.1l.7-10.5Z"/></svg>
+            <svg viewBox="0 0 32 32"><path d="M16 2.8 19.2 12.8 29.2 16l-10 3.2L16 29.2l-3.2-10L2.8 16l10-3.2L16 2.8Z"/><circle cx="16" cy="16" r="2.8"/></svg>
           </div>
           <div class="welcome-kicker">YOUR AI, YOUR WAY</div>
           <h1>What can I help<br>you with today?</h1>
@@ -58,17 +68,17 @@
 
           <div class="suggestions">
             <button type="button" class="suggestion" data-prompt="How does retrieval-augmented generation work?">
-              <span class="suggestion-icon violet">✳</span>
+              <span class="suggestion-icon violet"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8m0-12.8L5.6 18.4"/></svg></span>
               <span><b>Explore a concept</b><small>How does RAG work?</small></span>
               <span class="suggestion-arrow">↗</span>
             </button>
             <button type="button" class="suggestion" data-prompt="What is the Inverse Cloze Task used for?">
-              <span class="suggestion-icon blue">⌕</span>
+              <span class="suggestion-icon blue"><svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg></span>
               <span><b>Find an explanation</b><small>What is the Inverse Cloze Task?</small></span>
               <span class="suggestion-arrow">↗</span>
             </button>
             <button type="button" class="suggestion" data-prompt="How do dense and sparse retrieval differ?">
-              <span class="suggestion-icon amber">⇄</span>
+              <span class="suggestion-icon amber"><svg viewBox="0 0 24 24"><path d="M4 7h15l-3-3m4 13H5l3 3"/></svg></span>
               <span><b>Compare ideas</b><small>Dense vs. sparse retrieval</small></span>
               <span class="suggestion-arrow">↗</span>
             </button>
@@ -85,10 +95,11 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 14-7-5 14-2.5-5.5L5 12Z"/><path d="M11.5 13.5 19 5"/></svg>
           </button>
         </form>
-        <div class="composer-hint">Smash AI can make mistakes. Check important information.</div>
+        <div class="composer-hint">Enter to send <span>·</span> Shift+Enter for a new line <span>·</span> Answers are grounded in your knowledge base</div>
       </footer>
     </section>
   </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </body>
 </html>

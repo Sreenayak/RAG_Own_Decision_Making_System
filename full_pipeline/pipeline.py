@@ -27,19 +27,44 @@ class RAGPipeline:
     def indexed_chunks(self) -> int:
         return self.retriever.collection.count()
 
-    def answer(self, question: str, top_k: int = 5, api_key: str = "") -> dict:
+    def answer(
+        self,
+        question: str,
+        top_k: int = 5,
+        api_key: str = "",
+        history: list[dict[str, str]] | None = None,
+    ) -> dict:
         if not question or not question.strip():
             raise ValueError("Enter a question before submitting.")
         if top_k <= 0:
             raise ValueError("The number of retrieved sources must be positive.")
+        history = history or []
+        if not isinstance(history, list):
+            raise ValueError("Conversation history must be a list.")
+        for message in history:
+            if (
+                not isinstance(message, dict)
+                or message.get("role") not in {"user", "assistant"}
+                or not isinstance(message.get("content"), str)
+            ):
+                raise ValueError("Conversation history contains an invalid message.")
 
-        sources = self.retriever.retrieve(question.strip(), top_k=top_k)
+        previous_question = next(
+            (
+                message["content"].strip()
+                for message in reversed(history)
+                if message["role"] == "user" and message["content"].strip()
+            ),
+            "",
+        )
+        retrieval_query = f"{previous_question} {question.strip()}".strip()
+        sources = self.retriever.retrieve(retrieval_query, top_k=top_k)
         if not sources:
             raise RuntimeError(
                 "The Chroma index is empty. Run the document indexing command first."
             )
 
-        messages = build_messages(question.strip(), sources)
+        messages = build_messages(question.strip(), sources, history=history)
         answer = self.llm.generate(messages, api_key=api_key)
         return {"answer": answer, "sources": sources}
 

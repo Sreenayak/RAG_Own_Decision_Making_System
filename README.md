@@ -6,6 +6,16 @@ processed chunks, then uses Groq to generate an answer from those passages.
 The website shows a chat conversation only; it does not show PDF names, file
 lists, or document counts.
 
+## Interface features
+
+- Search, reopen, and delete previous conversations; history stays in this
+  browser's local storage.
+- Ask follow-up questions with the recent conversation included as context.
+- Copy responses, export a conversation as Markdown, and give helpful/not-helpful
+  feedback.
+- Switch between light and dark themes. Keyboard shortcuts: `Ctrl+K` to find
+  conversations, `Ctrl+N` to start a new one, and `Enter` to send.
+
 ## Run on Windows
 
 Open PowerShell in the repository folder:
@@ -37,6 +47,8 @@ Start the website:
 Open **http://127.0.0.1:5000** in your browser. The first question loads the
 local embedding model if it is not already cached. Use the message box to ask a
 question; Smash AI will search the existing Chroma index and answer in the chat.
+Conversation history is saved only in this browser. Use the delete control in
+the sidebar to remove individual chats.
 
 ## Add or re-index PDFs
 
@@ -78,6 +90,7 @@ The changes can be committed as one focused interface update:
 ```powershell
 git add full_pipeline/app.py prompting/prompt_builder.py requirements.txt README.md
 git add templates static tests
+git add -u -- advanced/advanced_rag.py data/download_samples.py evaluation/evaluator.py retrieval/retriever.py requirements-minimal.txt config.yaml
 git commit -m "Replace Streamlit with Smash AI Flask chat"
 git push -u origin HEAD
 ```
