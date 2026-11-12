@@ -31,7 +31,7 @@ class GroqLLMClientTests(unittest.TestCase):
     def test_requires_an_api_key(self):
         client = GroqLLMClient()
         with patch.dict(os.environ, {"GROQ_API_KEY": ""}):
-            with self.assertRaisesRegex(RuntimeError, "Groq API key is required"):
+            with self.assertRaisesRegex(RuntimeError, "Groq API key is not configured"):
                 client.generate([{"role": "user", "content": "test"}])
 
 

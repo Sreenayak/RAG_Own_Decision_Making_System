@@ -1,12 +1,14 @@
 """Groq chat-completions client for grounded RAG responses."""
 
 import os
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
 
 
-load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env")
 
 
 class GroqLLMClient:
@@ -22,8 +24,9 @@ class GroqLLMClient:
         key = api_key.strip() or os.getenv("GROQ_API_KEY", "").strip()
         if not key:
             raise RuntimeError(
-                "A Groq API key is required. Add GROQ_API_KEY to .env or enter it "
-                "in the app sidebar."
+                "Groq API key is not configured. Add GROQ_API_KEY=your_key_here "
+                "to the project .env file, save it, and restart Smash AI. Create "
+                "a key at https://console.groq.com/keys."
             )
 
         response = requests.post(

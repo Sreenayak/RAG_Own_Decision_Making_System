@@ -53,7 +53,10 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
             <span>Export</span>
           </button>
-          <div class="online-status"><span></span> Ready</div>
+          <button class="online-status" id="api-status" type="button" aria-label="API setup status">
+            <span class="status-dot"></span>
+            <span class="status-label">Checking setup...</span>
+          </button>
         </div>
       </header>
 
@@ -100,6 +103,22 @@
     </section>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <dialog class="setup-dialog" id="setup-dialog" aria-labelledby="setup-title">
+    <button class="dialog-close" id="close-setup" type="button" aria-label="Close setup guide">×</button>
+    <div class="dialog-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M12 3 14.5 9.5 21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z"/></svg>
+    </div>
+    <p class="dialog-kicker">ONE-TIME SETUP</p>
+    <h2 id="setup-title">Connect Smash AI</h2>
+    <p class="dialog-description">Smash AI found relevant information, but needs your Groq API key to write an answer.</p>
+    <ol class="setup-steps">
+      <li>Get a key from <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer">Groq Console</a>.</li>
+      <li>Open the project’s <code>.env</code> file and add:</li>
+    </ol>
+    <pre class="env-example"><code>GROQ_API_KEY=your_key_here</code></pre>
+    <p class="setup-note">Save the file, stop Smash AI with Ctrl+C, and start it again. Keep your key private; never paste it into chat.</p>
+    <button class="dialog-done" id="setup-done" type="button">Got it</button>
+  </dialog>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </body>
 </html>

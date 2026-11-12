@@ -13,6 +13,8 @@ const searchInput = document.getElementById("chat-search");
 const chatTitle = document.getElementById("chat-title");
 const exportButton = document.getElementById("export-chat");
 const themeButton = document.getElementById("theme-toggle");
+const apiStatus = document.getElementById("api-status");
+const setupDialog = document.getElementById("setup-dialog");
 const toast = document.getElementById("toast");
 let conversations = loadConversations();
 let activeConversationId = conversations[0]?.id || null;
@@ -56,6 +58,23 @@ function showToast(message) {
   toast.classList.add("visible");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => toast.classList.remove("visible"), 2300);
+}
+
+async function updateApiStatus() {
+  const label = apiStatus.querySelector(".status-label");
+  try {
+    const response = await fetch("/api/status");
+    if (!response.ok) throw new Error("Status request failed.");
+    const status = await response.json();
+    apiStatus.classList.toggle("needs-key", !status.api_key_configured);
+    label.textContent = status.api_key_configured ? "Ready" : "Key needed";
+    apiStatus.title = status.api_key_configured
+      ? "Groq is configured"
+      : "Click for API key setup instructions";
+  } catch {
+    label.textContent = "Status unavailable";
+    apiStatus.title = "Could not check API setup";
+  }
 }
 
 function activeConversation() {
@@ -300,6 +319,10 @@ async function askSmashAI(question) {
     responseRow.remove();
     renderMessage(answer);
     renderConversation();
+    if (error.message.includes("Groq API key is not configured")) {
+      apiStatus.classList.add("needs-key");
+      apiStatus.querySelector(".status-label").textContent = "Key needed";
+    }
   } finally {
     waitingForAnswer = false;
     sendButton.disabled = false;
@@ -372,6 +395,12 @@ themeButton.addEventListener("click", () => {
   const nextTheme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   setTheme(nextTheme);
 });
+apiStatus.addEventListener("click", () => setupDialog.showModal());
+document.getElementById("close-setup").addEventListener("click", () => setupDialog.close());
+document.getElementById("setup-done").addEventListener("click", () => setupDialog.close());
+setupDialog.addEventListener("click", (event) => {
+  if (event.target === setupDialog) setupDialog.close();
+});
 document.getElementById("mobile-menu").addEventListener("click", () => {
   sidebar.classList.toggle("open");
 });
@@ -394,3 +423,4 @@ try {
   document.documentElement.dataset.theme = "light";
 }
 renderConversation();
+updateApiStatus();

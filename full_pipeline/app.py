@@ -1,5 +1,6 @@
 """Local Flask website for Smash AI."""
 
+import os
 from pathlib import Path
 
 import requests
@@ -29,6 +30,11 @@ def get_pipeline() -> RAGPipeline:
 @app.get("/")
 def home():
     return render_template("index.html")
+
+
+@app.get("/api/status")
+def status():
+    return jsonify({"api_key_configured": bool(os.getenv("GROQ_API_KEY", "").strip())})
 
 
 @app.post("/api/chat")

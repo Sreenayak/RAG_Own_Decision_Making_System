@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import Mock, patch
 
@@ -16,6 +17,13 @@ class SmashAIWebTests(unittest.TestCase):
         self.assertIn(b"Smash AI", response.data)
         self.assertNotIn(b"PDF documents", response.data)
         self.assertNotIn(b"Indexed passages", response.data)
+
+    def test_status_reports_missing_key_without_exposing_a_secret(self):
+        with patch.dict(os.environ, {"GROQ_API_KEY": ""}):
+            response = self.client.get("/api/status")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"api_key_configured": False})
 
     @patch("full_pipeline.app.get_pipeline")
     def test_chat_returns_answer_without_exposing_sources(self, get_pipeline):
