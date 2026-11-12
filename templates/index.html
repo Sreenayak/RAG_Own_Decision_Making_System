@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111827">
+  <title>Smash AI</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="/" aria-label="Smash AI home">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32"><path d="M17.9 3.5 7.7 17h6.9l-1.1 11.5L24.3 14h-7.1l.7-10.5Z"/></svg>
+        </span>
+        <span class="brand-name">Smash <b>AI</b></span>
+      </a>
+
+      <button class="new-chat" id="new-chat" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        <span>New chat</span>
+        <kbd>Ctrl K</kbd>
+      </button>
+
+      <div class="sidebar-label">YOUR SPACE</div>
+      <div class="space-card">
+        <span class="space-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5v-15Z"/><path d="M4 18.5A2.5 2.5 0 0 1 6.5 16H20M8 7h8M8 10h6"/></svg>
+        </span>
+        <span><b>My knowledge</b><small>Ask. Explore. Understand.</small></span>
+      </div>
+
+      <div class="sidebar-bottom">
+        <span class="local-indicator"></span>
+        <span>Private workspace</span>
+        <span class="sidebar-version">LOCAL</span>
+      </div>
+    </aside>
+
+    <section class="main-panel">
+      <header class="topbar">
+        <button class="mobile-menu" id="mobile-menu" type="button" aria-label="Toggle menu">
+          <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <div class="topbar-brand">Smash AI <span class="topbar-divider">/</span> <span class="topbar-muted">Chat</span></div>
+        <div class="online-status"><span></span> Ready</div>
+      </header>
+
+      <main class="chat-scroll" id="chat-scroll">
+        <section class="welcome" id="welcome">
+          <div class="welcome-orb" aria-hidden="true">
+            <svg viewBox="0 0 32 32"><path d="M17.9 3.5 7.7 17h6.9l-1.1 11.5L24.3 14h-7.1l.7-10.5Z"/></svg>
+          </div>
+          <div class="welcome-kicker">YOUR AI, YOUR WAY</div>
+          <h1>What can I help<br>you with today?</h1>
+          <p>Ask a question and get a thoughtful answer from Smash AI.</p>
+
+          <div class="suggestions">
+            <button type="button" class="suggestion" data-prompt="How does retrieval-augmented generation work?">
+              <span class="suggestion-icon violet">✳</span>
+              <span><b>Explore a concept</b><small>How does RAG work?</small></span>
+              <span class="suggestion-arrow">↗</span>
+            </button>
+            <button type="button" class="suggestion" data-prompt="What is the Inverse Cloze Task used for?">
+              <span class="suggestion-icon blue">⌕</span>
+              <span><b>Find an explanation</b><small>What is the Inverse Cloze Task?</small></span>
+              <span class="suggestion-arrow">↗</span>
+            </button>
+            <button type="button" class="suggestion" data-prompt="How do dense and sparse retrieval differ?">
+              <span class="suggestion-icon amber">⇄</span>
+              <span><b>Compare ideas</b><small>Dense vs. sparse retrieval</small></span>
+              <span class="suggestion-arrow">↗</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="messages" id="messages" aria-live="polite"></section>
+      </main>
+
+      <footer class="composer-area">
+        <form class="composer" id="chat-form">
+          <textarea id="question" rows="1" maxlength="4000" placeholder="Message Smash AI..." aria-label="Message Smash AI"></textarea>
+          <button class="send-button" id="send-button" type="submit" aria-label="Send message">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 14-7-5 14-2.5-5.5L5 12Z"/><path d="M11.5 13.5 19 5"/></svg>
+          </button>
+        </form>
+        <div class="composer-hint">Smash AI can make mistakes. Check important information.</div>
+      </footer>
+    </section>
+  </div>
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</body>
+</html>

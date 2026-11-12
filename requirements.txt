@@ -7,4 +7,4 @@ pypdf
 tiktoken
 requests
 python-dotenv
-streamlit
+Flask
