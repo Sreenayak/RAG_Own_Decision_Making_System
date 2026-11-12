@@ -3,3 +3,8 @@ sentence-transformers
 rank-bm25
 numpy
 tqdm
+pypdf
+tiktoken
+requests
+python-dotenv
+streamlit
