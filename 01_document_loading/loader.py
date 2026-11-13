@@ -196,7 +196,7 @@ def demo():
         out_path.write_text(d.content, encoding="utf-8")
         console.print(f"[green]Saved:[/green] {out_path}")
 
-    console.print(f"\n[bold green]✓ Loaded {len(docs)} documents.[/bold green]")
+    console.print(f"\n[bold green]Loaded {len(docs)} documents.[/bold green]")
     return docs
 
 
