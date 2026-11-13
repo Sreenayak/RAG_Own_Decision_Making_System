@@ -1,501 +1,384 @@
-
 """
-Module 02: Text Preprocessing and Chunking
+Module 2 — Chunking Strategies
+================================
+Chunking = splitting a large document into smaller pieces before embedding.
 
-Project: RAG_Own_Decision_Making_System
+Why it matters:
+    • Embedding models have a token limit (e.g. 512 tokens)
+    • Smaller, focused chunks retrieve more precisely
+    • Too small → context lost; Too large → noisy retrieval
 
-Responsibilities:
-1. Read extracted documents from JSONL.
-2. Clean and normalize text.
-3. Perform token-based chunking.
-4. Support overlapping chunks.
-5. Support sentence-aware chunking.
-6. Preserve document metadata.
-7. Save processed chunks into JSONL.
+Strategies implemented here:
+    1. FixedChunker       — split every N characters
+    2. SentenceChunker    — split on sentence boundaries (NLTK)
+    3. RecursiveChunker   — try paragraph → sentence → word splits (recommended)
+    4. SemanticChunker    — split when topic changes (embedding-based)
+
+All chunkers return a list of Chunk objects with text + metadata.
 """
 
-import json
+from __future__ import annotations
+
 import re
-import logging
-
+import sys
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable
 
-import tiktoken
+import nltk
 
+# Add repo root to path
+_ROOT = str(Path(__file__).parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
-# ==========================================================
-# 1. PROJECT CONFIGURATION
-# ==========================================================
+from src.models import Chunk  # noqa: E402
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-INPUT_FILE = PROJECT_ROOT / "data" / "processed" / "documents.jsonl"
-
-OUTPUT_FILE = PROJECT_ROOT / "data" / "processed" / "chunks.jsonl"
-
-
-# ==========================================================
-# 2. LOGGING CONFIGURATION
-# ==========================================================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(levelname)s: %(message)s"
-)
-
-logger = logging.getLogger(__name__)
+# Download NLTK sentence tokenizer data (once)
+try:
+    nltk.data.find("tokenizers/punkt_tab")
+except LookupError:
+    nltk.download("punkt_tab", quiet=True)
+try:
+    nltk.data.find("tokenizers/punkt")
+except LookupError:
+    nltk.download("punkt", quiet=True)
 
 
-# ==========================================================
-# 3. TEXT CHUNKER CLASS
-# ==========================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Fixed-size chunker
+# ─────────────────────────────────────────────────────────────────────────────
 
-class TextChunker:
+class FixedChunker:
     """
-    Preprocesses extracted documents and creates text chunks.
+    Split text into fixed-size windows of `chunk_size` characters
+    with `overlap` characters of overlap between consecutive chunks.
+
+    Pros: Simple, predictable
+    Cons: May cut sentences mid-way
+    """
+
+    def __init__(self, chunk_size: int = 512, overlap: int = 64):
+        self.chunk_size = chunk_size
+        self.overlap = overlap
+
+    def split(self, text: str, source: str = "", metadata: dict | None = None) -> list[Chunk]:
+        metadata = metadata or {}
+        chunks = []
+        start = 0
+        idx = 0
+        while start < len(text):
+            end = start + self.chunk_size
+            chunk_text = text[start:end].strip()
+            if chunk_text:
+                chunks.append(Chunk(
+                    text=chunk_text,
+                    source=source,
+                    chunk_index=idx,
+                    metadata={**metadata, "strategy": "fixed"},
+                ))
+                idx += 1
+            start += self.chunk_size - self.overlap
+        return chunks
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Sentence-based chunker
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SentenceChunker:
+    """
+    Split text by sentences (NLTK), then group N sentences per chunk.
+
+    Pros: Preserves sentence boundaries, readable chunks
+    Cons: Chunk sizes vary a lot
+    """
+
+    def __init__(self, sentences_per_chunk: int = 5, overlap_sentences: int = 1):
+        self.sentences_per_chunk = sentences_per_chunk
+        self.overlap_sentences = overlap_sentences
+
+    def split(self, text: str, source: str = "", metadata: dict | None = None) -> list[Chunk]:
+        metadata = metadata or {}
+        sentences = nltk.sent_tokenize(text)
+        chunks = []
+        idx = 0
+        step = self.sentences_per_chunk - self.overlap_sentences
+        for i in range(0, len(sentences), max(step, 1)):
+            window = sentences[i: i + self.sentences_per_chunk]
+            chunk_text = " ".join(window).strip()
+            if chunk_text:
+                chunks.append(Chunk(
+                    text=chunk_text,
+                    source=source,
+                    chunk_index=idx,
+                    metadata={**metadata, "strategy": "sentence"},
+                ))
+                idx += 1
+        return chunks
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Recursive chunker (recommended default)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class RecursiveChunker:
+    """
+    Try to split on progressively smaller separators:
+        \\n\\n (paragraphs) → \\n (lines) → .  (sentences) → ' ' (words)
+
+    This is the same strategy used by LangChain's RecursiveCharacterTextSplitter
+    and is the recommended default for most RAG pipelines.
+
+    Pros: Respects natural text structure, consistent size
+    Cons: Slightly more complex logic
+    """
+
+    DEFAULT_SEPARATORS = ["\n\n", "\n", ". ", "! ", "? ", " ", ""]
+
+    def __init__(
+        self,
+        chunk_size: int = 512,
+        overlap: int = 64,
+        separators: list[str] | None = None,
+    ):
+        self.chunk_size = chunk_size
+        self.overlap = overlap
+        self.separators = separators or self.DEFAULT_SEPARATORS
+
+    def split(self, text: str, source: str = "", metadata: dict | None = None) -> list[Chunk]:
+        metadata = metadata or {}
+        raw_chunks = self._recursive_split(text, self.separators)
+        # Merge small chunks and apply overlap
+        merged = self._merge_chunks(raw_chunks)
+        return [
+            Chunk(
+                text=c,
+                source=source,
+                chunk_index=i,
+                metadata={**metadata, "strategy": "recursive"},
+            )
+            for i, c in enumerate(merged)
+            if c.strip()
+        ]
+
+    def _recursive_split(self, text: str, separators: list[str]) -> list[str]:
+        """Recursively split on the best available separator."""
+        if not separators:
+            return [text]
+
+        sep = separators[0]
+        remaining = separators[1:]
+
+        if sep == "":
+            # Final fallback: character-level split
+            return [text[i: i + self.chunk_size] for i in range(0, len(text), self.chunk_size)]
+
+        parts = text.split(sep)
+        result = []
+        for part in parts:
+            if len(part) <= self.chunk_size:
+                result.append(part)
+            else:
+                result.extend(self._recursive_split(part, remaining))
+        return result
+
+    def _merge_chunks(self, parts: list[str]) -> list[str]:
+        """Merge small parts into chunks respecting chunk_size + overlap."""
+        merged: list[str] = []
+        current = ""
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if len(current) + len(part) + 1 <= self.chunk_size:
+                current = (current + " " + part).strip()
+            else:
+                if current:
+                    merged.append(current)
+                # Include overlap from end of previous chunk
+                if self.overlap > 0 and current:
+                    overlap_text = current[-self.overlap:]
+                    current = (overlap_text + " " + part).strip()
+                else:
+                    current = part
+
+        if current:
+            merged.append(current)
+        return merged
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Semantic chunker
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SemanticChunker:
+    """
+    Split text when the topic changes, measured by cosine similarity
+    between consecutive sentence embeddings.
+
+    Pros: Best semantic coherence — each chunk is truly about one topic
+    Cons: Requires embedding model at chunk time (slower)
     """
 
     def __init__(
         self,
-        input_file: Path = INPUT_FILE,
-        output_file: Path = OUTPUT_FILE,
-        chunk_size: int = 500,
-        chunk_overlap: int = 100,
-        strategy: str = "token"
+        embed_fn: Callable[[list[str]], list[list[float]]],
+        threshold: float = 0.4,
+        min_chunk_size: int = 100,
     ):
-
-        self.input_file = Path(input_file)
-        self.output_file = Path(output_file)
-
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-
-        self.strategy = strategy.lower()
-
-        if self.chunk_size <= 0:
-            raise ValueError("Chunk size must be positive.")
-
-        if not 0 <= self.chunk_overlap < self.chunk_size:
-            raise ValueError(
-                "Chunk overlap must be >= 0 and smaller than chunk size."
-            )
-
-        if self.strategy not in {"token", "sentence"}:
-            raise ValueError(
-                "Strategy must be 'token' or 'sentence'."
-            )
-
-        # Initialize tokenizer
-        self.encoding = tiktoken.get_encoding("cl100k_base")
-
-        self.documents = []
-        self.chunks = []
-
-        logger.info("Text Chunker Initialized")
-        logger.info(f"Chunk Size: {self.chunk_size}")
-        logger.info(f"Chunk Overlap: {self.chunk_overlap}")
-        logger.info(f"Strategy: {self.strategy}")
-
-
-    # ======================================================
-    # 4. READ EXTRACTED DOCUMENTS
-    # ======================================================
-
-    def load_documents(self) -> list[dict]:
         """
-        Read document records from the JSONL output of Module 01.
+        Parameters
+        ----------
+        embed_fn   : A callable that takes a list of strings and returns embeddings
+        threshold  : Cosine distance threshold to trigger a new chunk (0–1)
         """
+        self.embed_fn = embed_fn
+        self.threshold = threshold
+        self.min_chunk_size = min_chunk_size
 
-        if not self.input_file.exists():
-            raise FileNotFoundError(
-                f"Document file not found: {self.input_file}"
-            )
+    def split(self, text: str, source: str = "", metadata: dict | None = None) -> list[Chunk]:
+        import numpy as np
 
-        self.documents = []
+        metadata = metadata or {}
+        sentences = nltk.sent_tokenize(text)
+        if len(sentences) < 2:
+            return [Chunk(text=text, source=source, chunk_index=0, metadata=metadata)]
 
-        with self.input_file.open(
-            "r",
-            encoding="utf-8"
-        ) as file:
+        embeddings = self.embed_fn(sentences)
+        embeddings = np.array(embeddings)
 
-            for line_number, line in enumerate(file, start=1):
+        # Normalise for cosine distance
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1e-10, norms)
+        embeddings = embeddings / norms
 
-                if not line.strip():
-                    continue
+        # Compute cosine similarity between consecutive sentences
+        similarities = [
+            float(embeddings[i] @ embeddings[i + 1])
+            for i in range(len(embeddings) - 1)
+        ]
 
-                try:
-                    document = json.loads(line)
+        # Split where similarity drops below threshold
+        split_points = [
+            i + 1
+            for i, sim in enumerate(similarities)
+            if sim < (1 - self.threshold)
+        ]
 
-                    if "text" not in document:
-                        logger.warning(
-                            f"Missing text at line {line_number}"
-                        )
-                        continue
-
-                    if not isinstance(document["text"], str):
-                        logger.warning(
-                            f"Invalid text at line {line_number}"
-                        )
-                        continue
-
-                    if not document["text"].strip():
-                        continue
-
-                    self.documents.append(document)
-
-                except json.JSONDecodeError as error:
-
-                    logger.warning(
-                        f"Invalid JSON at line {line_number}: {error}"
-                    )
-
-        logger.info(
-            f"Loaded {len(self.documents)} document records."
-        )
-
-        return self.documents
-
-
-    # ======================================================
-    # 5. CLEAN AND NORMALIZE TEXT
-    # ======================================================
-
-    @staticmethod
-    def clean_text(text: str) -> str:
-        """
-        Remove unnecessary whitespace and normalize text.
-        """
-
-        # Remove null characters
-        text = text.replace("\x00", " ")
-
-        # Fix words split by PDF line wrapping
-        text = re.sub(
-            r"(?<=\w)-\s*\n\s*(?=\w)",
-            "",
-            text
-        )
-
-        # Replace line breaks with spaces
-        text = re.sub(r"[\r\n\t]+", " ", text)
-
-        # Remove repeated spaces
-        text = re.sub(r"\s+", " ", text)
-
-        return text.strip()
-
-
-    # ======================================================
-    # 6. TOKENIZE TEXT
-    # ======================================================
-
-    def tokenize(self, text: str) -> list[int]:
-        """
-        Convert text into token IDs.
-        """
-
-        return self.encoding.encode(text)
-
-
-    # ======================================================
-    # 7. TOKEN-BASED CHUNKING
-    # ======================================================
-
-    def token_chunking(self, text: str) -> list[dict]:
-        """
-        Split text into fixed-size token chunks
-        with configurable overlap.
-        """
-
-        tokens = self.tokenize(text)
-
+        # Build chunks from split points
+        boundaries = [0] + split_points + [len(sentences)]
         chunks = []
-
-        step = self.chunk_size - self.chunk_overlap
-
-        for start in range(0, len(tokens), step):
-
-            end = min(
-                start + self.chunk_size,
-                len(tokens)
-            )
-
-            chunk_tokens = tokens[start:end]
-
-            chunk_text = self.encoding.decode(chunk_tokens)
-
-            if chunk_text.strip():
-
-                chunks.append({
-                    "text": chunk_text.strip(),
-                    "token_count": len(chunk_tokens),
-                    "start_token": start,
-                    "end_token": end
-                })
-
-            if end == len(tokens):
-                break
-
+        for ci, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
+            chunk_text = " ".join(sentences[start:end]).strip()
+            if len(chunk_text) >= self.min_chunk_size:
+                chunks.append(Chunk(
+                    text=chunk_text,
+                    source=source,
+                    chunk_index=ci,
+                    metadata={**metadata, "strategy": "semantic"},
+                ))
         return chunks
 
 
-    # ======================================================
-    # 8. SENTENCE-AWARE CHUNKING
-    # ======================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# Factory helper
+# ─────────────────────────────────────────────────────────────────────────────
 
-    def sentence_chunking(self, text: str) -> list[dict]:
-        """
-        Group complete sentences into chunks while
-        respecting the approximate token limit.
+def get_chunker(strategy: str, **kwargs):
+    """Return a chunker by strategy name (reads from config)."""
+    strategies = {
+        "fixed": FixedChunker,
+        "sentence": SentenceChunker,
+        "recursive": RecursiveChunker,
+    }
+    cls = strategies.get(strategy)
+    if cls is None:
+        raise ValueError(
+            f"Unknown chunking strategy: {strategy!r}. "
+            f"Choose from: {list(strategies.keys())}"
+        )
+    return cls(**kwargs)
 
-        Oversized individual sentences are split into
-        smaller token chunks.
-        """
 
-        sentences = re.split(
-            r'(?<=[.!?])\s+',
-            text
+# ─────────────────────────────────────────────────────────────────────────────
+# Demo
+# ─────────────────────────────────────────────────────────────────────────────
+
+def demo():
+    """
+    Compare all chunking strategies on a sample text.
+    Run: python 02_chunking/chunker.py
+    """
+    from rich.console import Console
+    from rich.table import Table
+    from pathlib import Path
+
+    console = Console()
+    console.rule("[bold blue]Module 2 — Chunking Strategies")
+
+    # Load any processed markdown
+    processed_dir = Path(__file__).parent.parent / "data" / "processed"
+    md_files = list(processed_dir.glob("*.md"))
+
+    if md_files:
+        sample_text = md_files[0].read_text(encoding="utf-8")[:5000]
+        source = md_files[0].name
+    else:
+        # Built-in sample text
+        sample_text = """
+Artificial intelligence (AI) is intelligence demonstrated by machines, as opposed to
+the natural intelligence displayed by animals including humans.
+
+AI research has been defined as the field of study of intelligent agents, which refers
+to any system that perceives its environment and takes actions that maximize its chance
+of achieving its goals.
+
+The term "artificial intelligence" had previously been used to describe machines that
+mimic and display "human" cognitive skills associated with the human mind, such as
+"learning" and "problem-solving".
+
+Retrieval-Augmented Generation (RAG) is a technique that combines retrieval-based
+and generation-based approaches for natural language processing tasks. It retrieves
+relevant documents from a large corpus and uses them as context for generating answers.
+
+Vector databases store high-dimensional vectors and support efficient similarity search.
+They are a core component of modern RAG pipelines, enabling fast retrieval of semantically
+relevant chunks from millions of documents.
+        """ * 4
+        source = "sample_text"
+
+    strategies = {
+        "Fixed (512 chars)": FixedChunker(chunk_size=512, overlap=64),
+        "Sentence (5 sent)": SentenceChunker(sentences_per_chunk=5, overlap_sentences=1),
+        "Recursive (512)":   RecursiveChunker(chunk_size=512, overlap=64),
+    }
+
+    table = Table(title="Chunking Strategy Comparison", show_lines=True)
+    table.add_column("Strategy", style="cyan")
+    table.add_column("# Chunks", justify="right")
+    table.add_column("Min chars", justify="right")
+    table.add_column("Max chars", justify="right")
+    table.add_column("Avg chars", justify="right")
+    table.add_column("Sample chunk (first 80 chars)")
+
+    for name, chunker in strategies.items():
+        chunks = chunker.split(sample_text, source=source)
+        sizes = [len(c.text) for c in chunks]
+        if not sizes:
+            continue
+        table.add_row(
+            name,
+            str(len(chunks)),
+            str(min(sizes)),
+            str(max(sizes)),
+            f"{sum(sizes) / len(sizes):.0f}",
+            chunks[0].text[:80].replace("\n", " "),
         )
 
-        chunks = []
-        current_tokens = []
+    console.print(table)
+    console.print(f"\n[bold green]✓ Chunking demo complete.[/bold green]")
 
-        def save_chunk(token_ids):
 
-            if token_ids:
-
-                chunks.append({
-                    "text": self.encoding.decode(
-                        token_ids
-                    ).strip(),
-
-                    "token_count": len(token_ids)
-                })
-
-        for sentence in sentences:
-
-            sentence = sentence.strip()
-
-            if not sentence:
-                continue
-
-            sentence_tokens = self.tokenize(sentence)
-
-            # Handle an individual oversized sentence
-            if len(sentence_tokens) > self.chunk_size:
-
-                if current_tokens:
-                    save_chunk(current_tokens)
-                    current_tokens = []
-
-                oversized_chunks = self.token_chunking(sentence)
-
-                chunks.extend(oversized_chunks)
-
-                continue
-
-            # Check whether the next sentence exceeds chunk size
-            if (
-                current_tokens
-                and len(current_tokens) + len(sentence_tokens)
-                > self.chunk_size
-            ):
-
-                previous_tokens = current_tokens
-
-                save_chunk(previous_tokens)
-
-                # Preserve overlap from previous chunk
-                overlap_tokens = previous_tokens[
-                    -self.chunk_overlap:
-                ] if self.chunk_overlap else []
-
-                current_tokens = overlap_tokens.copy()
-
-            current_tokens.extend(sentence_tokens)
-
-        # Save remaining tokens
-        save_chunk(current_tokens)
-
-        return chunks
-
-
-    # ======================================================
-    # 9. PROCESS ALL DOCUMENTS
-    # ======================================================
-
-    def process_documents(self) -> list[dict]:
-        """
-        Clean documents and create chunks with metadata.
-        """
-
-        self.chunks = []
-
-        for document_index, document in enumerate(
-            self.documents,
-            start=1
-        ):
-
-            text = self.clean_text(document["text"])
-
-            if not text:
-                continue
-
-            # Apply selected chunking technique
-            if self.strategy == "token":
-
-                document_chunks = self.token_chunking(text)
-
-            else:
-
-                document_chunks = self.sentence_chunking(text)
-
-            original_metadata = document.get(
-                "metadata",
-                {}
-            )
-
-            for chunk_index, chunk in enumerate(
-                document_chunks,
-                start=1
-            ):
-
-                chunk_record = {
-
-                    "chunk_id": (
-                        f"doc_{document_index}_"
-                        f"chunk_{chunk_index}"
-                    ),
-
-                    "text": chunk["text"],
-
-                    "metadata": {
-                        **original_metadata,
-
-                        "chunk_index": chunk_index,
-
-                        "token_count": chunk["token_count"],
-
-                        "chunking_strategy": self.strategy
-                    }
-                }
-
-                self.chunks.append(chunk_record)
-
-        logger.info(
-            f"Generated {len(self.chunks)} chunks."
-        )
-
-        return self.chunks
-
-
-    # ======================================================
-    # 10. SAVE PROCESSED CHUNKS
-    # ======================================================
-
-    def save_chunks(self) -> None:
-        """
-        Save all generated chunks in JSONL format.
-        """
-
-        if not self.chunks:
-            logger.warning("No chunks available to save.")
-            return
-
-        self.output_file.parent.mkdir(
-            parents=True,
-            exist_ok=True
-        )
-
-        with self.output_file.open(
-            "w",
-            encoding="utf-8"
-        ) as file:
-
-            for chunk in self.chunks:
-
-                file.write(
-                    json.dumps(
-                        chunk,
-                        ensure_ascii=False
-                    ) + "\n"
-                )
-
-        logger.info(
-            f"Chunks saved successfully: {self.output_file}"
-        )
-
-
-    # ======================================================
-    # 11. DISPLAY CHUNKING SUMMARY
-    # ======================================================
-
-    def display_summary(self) -> None:
-        """
-        Display preprocessing and chunking statistics.
-        """
-
-        total_chunks = len(self.chunks)
-
-        total_tokens = sum(
-            chunk["metadata"]["token_count"]
-            for chunk in self.chunks
-        )
-
-        average_tokens = (
-            total_tokens / total_chunks
-            if total_chunks else 0
-        )
-
-        unique_sources = {
-            chunk["metadata"].get("source", "Unknown")
-            for chunk in self.chunks
-        }
-
-        print("\n" + "=" * 55)
-        print("          TEXT CHUNKING SUMMARY")
-        print("=" * 55)
-
-        print(f"Input Documents    : {len(self.documents)}")
-        print(f"Source PDF Files   : {len(unique_sources)}")
-        print(f"Total Chunks       : {total_chunks}")
-        print(f"Total Tokens       : {total_tokens:,}")
-        print(f"Average Tokens     : {average_tokens:.2f}")
-        print(f"Chunk Size         : {self.chunk_size}")
-        print(f"Chunk Overlap      : {self.chunk_overlap}")
-        print(f"Strategy           : {self.strategy}")
-        print(f"Output File        : {self.output_file}")
-
-        print("=" * 55)
-
-
-# ==========================================================
-# 12. MAIN EXECUTION
-# ==========================================================
-
-def main():
-
-    # Initialize the chunker
-    chunker = TextChunker(
-        chunk_size=500,
-        chunk_overlap=100,
-        strategy="token"
-    )
-
-    # Load extracted documents from Module 01
-    chunker.load_documents()
-
-    # Clean and generate chunks
-    chunker.process_documents()
-
-    # Save chunks
-    chunker.save_chunks()
-
-    # Display processing statistics
-    chunker.display_summary()
-
-
-# Execute the module
 if __name__ == "__main__":
-    main()
+    demo()

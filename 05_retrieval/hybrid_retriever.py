@@ -1,6 +1,6 @@
 
-from retrieval.dense_retriever import DenseRetriever
-from retrieval.sparse_retriever import SparseRetriever
+from 05_retrieval.dense_retriever import DenseRetriever
+from 05_retrieval.sparse_retriever import SparseRetriever
 
 
 class HybridRetriever:

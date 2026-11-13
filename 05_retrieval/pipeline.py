@@ -1,6 +1,6 @@
 
-from retrieval.hybrid_retriever import HybridRetriever
-from retrieval.reranker import Reranker
+from 05_retrieval.hybrid_retriever import HybridRetriever
+from 05_retrieval.reranker import Reranker
 
 
 class RetrievalPipeline:
