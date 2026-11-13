@@ -41,7 +41,7 @@ A complete, runnable Retrieval-Augmented Generation (RAG) project in 10 small mo
 
 ```bash
 git clone <your-repo-url>
-cd "RAG From Scratch"
+cd "RAG_Own_Decision_Making_System"
 
 python3 -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
