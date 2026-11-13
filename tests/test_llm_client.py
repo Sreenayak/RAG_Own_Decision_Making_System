@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import Mock, patch
 
-from llm_integration.llm_client import GroqLLMClient
+from 07_llm_integration.llm_client import GroqLLMClient
 
 
 class GroqLLMClientTests(unittest.TestCase):

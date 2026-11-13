@@ -1,6 +1,6 @@
 import unittest
 
-from prompting.prompt_builder import build_messages
+from 06_prompting.prompt_builder import build_messages
 
 
 class PromptBuilderTests(unittest.TestCase):

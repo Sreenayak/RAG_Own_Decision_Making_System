@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import Mock, patch
 
-from full_pipeline.app import app
+from 08_full_pipeline.app import app
 
 
 class SmashAIWebTests(unittest.TestCase):

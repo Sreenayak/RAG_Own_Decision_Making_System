@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock
 
-from full_pipeline.pipeline import RAGPipeline
+from 08_full_pipeline.pipeline import RAGPipeline
 
 
 class RAGPipelineTests(unittest.TestCase):

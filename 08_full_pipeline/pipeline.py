@@ -3,12 +3,12 @@
 import json
 from pathlib import Path
 
-from chunking.chunker import TextChunker
-from document_loading.loader import DocumentLoader
-from embeddings.embedder import EmbeddingGenerator
-from llm_integration.llm_client import GroqLLMClient
-from prompting.prompt_builder import build_messages
-from retrieval.dense_retriever import DenseRetriever
+from 02_chunking.chunker import TextChunker
+from 01_document_loading.loader import DocumentLoader
+from 03_embeddings.embedder import EmbeddingGenerator
+from 07_llm_integration.llm_client import GroqLLMClient
+from 06_prompting.prompt_builder import build_messages
+from 05_retrieval.dense_retriever import DenseRetriever
 from vector_db.chroma.chroma_store import ChromaVectorStore
 
 

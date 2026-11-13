@@ -6,7 +6,7 @@ from pathlib import Path
 import requests
 from flask import Flask, jsonify, render_template, request
 
-from full_pipeline.pipeline import RAGPipeline
+from 08_full_pipeline.pipeline import RAGPipeline
 
 
 ROOT = Path(__file__).resolve().parents[1]
