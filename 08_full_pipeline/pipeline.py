@@ -1,136 +1,398 @@
-"""Retrieval, grounded answer generation, and document indexing."""
+"""
+Module 8 — Full End-to-End RAG Pipeline
+=========================================
+This is the main pipeline class that wires every module together.
 
-import json
+Pipeline stages (in order):
+    1. Load documents          → list[Document]
+    2. Chunk documents         → list[Chunk]
+    3. Embed chunks            → list[list[float]]
+    4. Store in vector DB      → ChromaStore | RedisStore
+    5. Retrieve for a query    → list[dict]
+    6. Build prompt            → BuiltPrompt
+    7. Generate answer         → str
+
+Everything is configured via config.yaml — no code changes needed to swap
+components. Swap components by editing the config, not the pipeline code.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
-from 02_chunking.chunker import TextChunker
-from 01_document_loading.loader import DocumentLoader
-from 03_embeddings.embedder import EmbeddingGenerator
-from 07_llm_integration.llm_client import GroqLLMClient
-from 06_prompting.prompt_builder import build_messages
-from 05_retrieval.dense_retriever import DenseRetriever
-from vector_db.chroma.chroma_store import ChromaVectorStore
+_ROOT = str(Path(__file__).parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from src.config_loader import load_config  # noqa: E402
+from src.models import Document, Chunk  # noqa: E402
+
+# Lazy imports via importlib to avoid numeric-prefix issues
+def _import(module_path: str, attr: str):
+    spec = importlib.util.spec_from_file_location(
+        attr, Path(_ROOT) / module_path
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return getattr(mod, attr)
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CHUNKS_FILE = PROJECT_ROOT / "data" / "processed" / "chunks.jsonl"
+# ─────────────────────────────────────────────────────────────────────────────
+# Response dataclass
+# ─────────────────────────────────────────────────────────────────────────────
 
+@dataclass
+class RAGResponse:
+    """The output of a RAG query."""
+    question: str
+    answer: str
+    sources: list[dict]
+    latency_s: float
+    model: str
+    num_chunks_retrieved: int
+
+    def __str__(self) -> str:
+        lines = [
+            f"Q: {self.question}",
+            f"A: {self.answer}",
+            f"",
+            f"Sources ({self.num_chunks_retrieved} chunks retrieved):",
+        ]
+        for i, s in enumerate(self.sources, 1):
+            lines.append(f"  [{i}] {s.get('source', '?')} — {s.get('text', '')[:60]}...")
+        lines.append(f"\nModel: {self.model} | Latency: {self.latency_s:.2f}s")
+        return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main Pipeline
+# ─────────────────────────────────────────────────────────────────────────────
 
 class RAGPipeline:
-    """Answer questions with passages retrieved from the local Chroma index."""
+    """
+    Full Retrieval-Augmented Generation Pipeline.
 
-    def __init__(self):
-        self.retriever = DenseRetriever()
-        self.llm = GroqLLMClient()
+    Usage:
+        pipeline = RAGPipeline()          # loads config.yaml
+        pipeline.index("data/raw/")       # index all PDFs in a folder
+        response = pipeline.query("What is RAG?")
+        print(response)
 
-    @property
-    def indexed_chunks(self) -> int:
-        return self.retriever.collection.count()
+    Or with a single file:
+        pipeline.index_file("data/raw/deep_learning.pdf")
+    """
 
-    def answer(
-        self,
-        question: str,
-        top_k: int = 5,
-        api_key: str = "",
-        history: list[dict[str, str]] | None = None,
-    ) -> dict:
-        if not question or not question.strip():
-            raise ValueError("Enter a question before submitting.")
-        if top_k <= 0:
-            raise ValueError("The number of retrieved sources must be positive.")
-        history = history or []
-        if not isinstance(history, list):
-            raise ValueError("Conversation history must be a list.")
-        for message in history:
-            if (
-                not isinstance(message, dict)
-                or message.get("role") not in {"user", "assistant"}
-                or not isinstance(message.get("content"), str)
-            ):
-                raise ValueError("Conversation history contains an invalid message.")
+    def __init__(self, config_path: str | None = None):
+        self._cfg = load_config(config_path)
+        self._indexed_chunks: list[Chunk] = []
+        self._store = None
+        self._retriever = None
+        self._setup_components()
 
-        previous_question = next(
-            (
-                message["content"].strip()
-                for message in reversed(history)
-                if message["role"] == "user" and message["content"].strip()
-            ),
-            "",
+    def _setup_components(self):
+        cfg = self._cfg
+
+        # Loader
+        DoclingLoader = _import("01_document_loading/loader.py", "DoclingLoader")
+        self._loader = DoclingLoader(
+            ocr=cfg["extraction"].get("ocr", False),
+            table_mode=cfg["extraction"].get("table_mode", "fast"),
         )
-        retrieval_query = f"{previous_question} {question.strip()}".strip()
-        sources = self.retriever.retrieve(retrieval_query, top_k=top_k)
-        if not sources:
-            raise RuntimeError(
-                "The Chroma index is empty. Run the document indexing command first."
+
+        # Chunker
+        chunk_cfg = cfg["chunking"]
+        get_chunker = _import("02_chunking/chunker.py", "get_chunker")
+        self._chunker = get_chunker(
+            strategy=chunk_cfg.get("strategy", "recursive"),
+            chunk_size=chunk_cfg.get("chunk_size", 512),
+            overlap=chunk_cfg.get("chunk_overlap", 64),
+        )
+
+        # Embedder
+        get_embedder = _import("03_embeddings/embedder.py", "get_embedder")
+        self._embedder = get_embedder(cfg["embeddings"])
+
+        # Vector store
+        self._store = self._build_store(cfg)
+
+        # Prompt builder
+        prompt_cfg = cfg["prompting"]
+        PromptBuilder = _import("06_prompting/prompt_builder.py", "PromptBuilder")
+        self._prompt_builder = PromptBuilder(
+            system_prompt=prompt_cfg.get("system_prompt"),
+            template=cfg.get("context_format", "numbered"),
+            max_context_tokens=prompt_cfg.get("max_context_tokens", 3000),
+        )
+
+        # LLM
+        get_llm = _import("07_llm_integration/llm_client.py", "get_llm")
+        self._llm = get_llm(cfg["llm"])
+
+        print(f"\n[pipeline] ✓ All components ready")
+        print(f"  Embedder : {self._embedder.__class__.__name__}")
+        print(f"  Store    : {self._store.__class__.__name__}")
+        print(f"  LLM      : {self._llm.model_name}")
+
+    def _build_store(self, cfg: dict):
+        db_cfg = cfg["vector_db"]
+        backend = db_cfg.get("backend", "chroma")
+
+        if backend == "chroma":
+            ChromaStore = _import("04_vector_db/chroma/chroma_store.py", "ChromaStore")
+            c = db_cfg["chroma"]
+            return ChromaStore(
+                persist_directory=c.get("persist_directory", "./data/chroma_store"),
+                collection_name=c.get("collection_name", "rag_docs"),
             )
 
-        messages = build_messages(question.strip(), sources, history=history)
-        answer = self.llm.generate(messages, api_key=api_key)
-        return {"answer": answer, "sources": sources}
+        if backend == "redis":
+            RedisStore = _import("04_vector_db/redis/redis_store.py", "RedisStore")
+            r = db_cfg["redis"]
+            return RedisStore(
+                host=r.get("host", "localhost"),
+                port=r.get("port", 6379),
+                password=r.get("password", ""),
+                index_name=r.get("index_name", "rag_docs"),
+                vector_dim=self._embedder.dimension,
+            )
 
-    def answer_without_retrieval(self, question: str, api_key: str = "") -> str:
-        if not question or not question.strip():
-            raise ValueError("Enter a question before submitting.")
-        return self.llm.generate(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "Answer using only your pretrained knowledge. You do not "
-                        "have access to the user's files or document index. If you "
-                        "do not know the answer, say so; do not imply that you "
-                        "searched any documents."
-                    ),
-                },
-                {"role": "user", "content": question.strip()},
-            ],
-            api_key=api_key,
+        raise ValueError(f"Unknown vector_db backend: {backend!r}")
+
+    # ── Indexing ──────────────────────────────────────────────────────────────
+
+    def index_file(self, file_path: str | Path) -> int:
+        """Load, chunk, embed, and store a single file. Returns chunk count."""
+        doc = self._loader.load_file(file_path)
+        return self._index_documents([doc])
+
+    def index_directory(self, directory: str | Path, glob: str = "**/*.pdf") -> int:
+        """Index all matching files in a directory. Returns total chunk count."""
+        docs = self._loader.load_directory(directory, glob=glob)
+        return self._index_documents(docs)
+
+    def index_url(self, url: str) -> int:
+        """Index a document from a URL."""
+        doc = self._loader.load_url(url)
+        return self._index_documents([doc])
+
+    def _index_documents(self, docs: list[Document]) -> int:
+        if not docs:
+            print("[pipeline] No documents to index.")
+            return 0
+
+        all_chunks: list[Chunk] = []
+        for doc in docs:
+            chunks = self._chunker.split(
+                doc.content,
+                source=doc.metadata.get("filename", doc.source),
+                metadata=doc.metadata,
+            )
+            # Filter out very short chunks
+            min_size = self._cfg["chunking"].get("min_chunk_size", 100)
+            chunks = [c for c in chunks if len(c.text) >= min_size]
+            all_chunks.extend(chunks)
+
+        if not all_chunks:
+            print("[pipeline] Chunking produced 0 valid chunks.")
+            return 0
+
+        print(f"[pipeline] Embedding {len(all_chunks)} chunks ...")
+        texts = [c.text for c in all_chunks]
+        embeddings = self._embedder.embed(texts)
+
+        print(f"[pipeline] Storing in vector DB ...")
+        self._store.add_chunks(all_chunks, embeddings)
+
+        self._indexed_chunks.extend(all_chunks)
+        print(f"[pipeline] ✓ Indexed {len(all_chunks)} chunks from {len(docs)} document(s)")
+        return len(all_chunks)
+
+    # ── Querying ──────────────────────────────────────────────────────────────
+
+    def query(self, question: str, top_k: int | None = None) -> RAGResponse:
+        """
+        Full RAG query: retrieve → prompt → generate.
+
+        Parameters
+        ----------
+        question : The user's question in natural language
+        top_k    : Override the config top_k value
+
+        Returns
+        -------
+        RAGResponse with answer, sources, and metadata
+        """
+        t_start = time.perf_counter()
+
+        # Retrieval
+        k = top_k or self._cfg["retrieval"].get("top_k", 5)
+        retriever = self._get_retriever()
+        chunks = retriever.retrieve(question, top_k=k)
+
+        if not chunks:
+            return RAGResponse(
+                question=question,
+                answer="I could not find relevant information in the indexed documents.",
+                sources=[],
+                latency_s=time.perf_counter() - t_start,
+                model=self._llm.model_name,
+                num_chunks_retrieved=0,
+            )
+
+        # Prompting
+        messages = self._prompt_builder.format_messages(question, chunks)
+
+        # Generation
+        answer = self._llm.generate(messages)
+
+        latency = time.perf_counter() - t_start
+
+        return RAGResponse(
+            question=question,
+            answer=answer,
+            sources=chunks,
+            latency_s=latency,
+            model=self._llm.model_name,
+            num_chunks_retrieved=len(chunks),
         )
 
+    def stream_query(self, question: str, top_k: int | None = None) -> Iterator[str]:
+        """
+        Stream the answer token by token.
+        Yields retrieved sources dict first, then text tokens.
+        """
+        k = top_k or self._cfg["retrieval"].get("top_k", 5)
+        retriever = self._get_retriever()
+        chunks = retriever.retrieve(question, top_k=k)
 
-def index_documents() -> int:
-    """Extract the PDFs, chunk and embed them, then update the Chroma index."""
-    user_documents = PROJECT_ROOT / "data" / "user_docs"
-    user_documents.mkdir(parents=True, exist_ok=True)
-    documents = []
-    for input_dir in (PROJECT_ROOT / "data" / "raw", user_documents):
-        documents.extend(
-            DocumentLoader(input_dir=input_dir).load_all_documents()
+        if not chunks:
+            yield "I could not find relevant information in the indexed documents."
+            return
+
+        messages = self._prompt_builder.format_messages(question, chunks)
+        yield from self._llm.stream(messages)
+
+    def _get_retriever(self):
+        """Build the retriever configured in config.yaml."""
+        get_retriever = _import("05_retrieval/retriever.py", "get_retriever")
+
+        ret_cfg = self._cfg["retrieval"]
+        strategy = ret_cfg.get("strategy", "similarity")
+
+        corpus_dicts = None
+        if strategy == "hybrid":
+            if self._indexed_chunks:
+                corpus_dicts = [
+                    {"text": c.text, "source": c.source, "chunk_index": c.chunk_index}
+                    for c in self._indexed_chunks
+                ]
+            elif hasattr(self._store, "get_all_chunks"):
+                # Index was built in an earlier run: rebuild the BM25 corpus from the store
+                corpus_dicts = self._store.get_all_chunks()
+            if not corpus_dicts:
+                print("[pipeline] Hybrid needs indexed text for BM25; falling back to 'similarity'.")
+                strategy = "similarity"
+
+        kwargs = {}
+        if strategy == "mmr":
+            kwargs["lambda_val"] = ret_cfg.get("mmr_lambda", 0.7)
+        if strategy == "hybrid":
+            kwargs["alpha"] = ret_cfg.get("hybrid", {}).get("alpha", 0.5)
+        if strategy == "rerank":
+            kwargs["rerank_model"] = ret_cfg.get("rerank", {}).get("model", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+
+        return get_retriever(
+            strategy=strategy,
+            store=self._store,
+            embedder=self._embedder,
+            corpus_chunks=corpus_dicts,
+            **kwargs,
         )
-    if not documents:
-        raise RuntimeError("No readable PDF documents were found in data/raw.")
 
-    chunker = TextChunker()
-    chunker.documents = documents
-    chunks = chunker.process_documents()
-    if not chunks:
-        raise RuntimeError("No text chunks were created from the PDF documents.")
+    # ── Utilities ─────────────────────────────────────────────────────────────
 
-    embedder = EmbeddingGenerator()
-    embedder.documents = chunks
-    embedder.load_model()
-    records = embedder.generate_embeddings()
-    if not records:
-        raise RuntimeError("No embeddings were generated.")
+    def get_indexed_sources(self) -> list[str]:
+        """List all source documents currently indexed."""
+        return self._store.get_all_sources() if hasattr(self._store, "get_all_sources") else []
 
-    store = ChromaVectorStore()
-    store.initialize_database()
-    store.create_collection()
+    def reset_index(self) -> None:
+        """Clear the entire vector store and reset indexed chunks."""
+        if hasattr(self._store, "delete_collection"):
+            self._store.delete_collection()
+        elif hasattr(self._store, "flush"):
+            self._store.flush()
+        self._indexed_chunks = []
+        # Re-create store
+        self._store = self._build_store(self._cfg)
+        print("[pipeline] Index reset.")
 
-    expected_ids = {str(record["chunk_id"]) for record in records}
-    existing_ids = store.collection.get(include=[])["ids"]
-    stale_ids = [chunk_id for chunk_id in existing_ids if chunk_id not in expected_ids]
-    if stale_ids:
-        store.collection.delete(ids=stale_ids)
 
-    inserted = store.add_embeddings(records)
-    CHUNKS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with CHUNKS_FILE.open("w", encoding="utf-8") as output:
-        for chunk in chunks:
-            output.write(json.dumps(chunk, ensure_ascii=False) + "\n")
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI entry point
+# ─────────────────────────────────────────────────────────────────────────────
 
-    return inserted
+def main():
+    """
+    Interactive CLI for the RAG pipeline.
+    Run: python 08_full_pipeline/pipeline.py
+    """
+    from rich.console import Console
+    from rich.panel import Panel
+
+    console = Console()
+    console.rule("[bold blue]RAG From Scratch — Interactive CLI")
+
+    pipeline = RAGPipeline()
+
+    # Auto-index data/raw if it has PDFs
+    raw_dir = Path("data/raw")
+    if raw_dir.exists() and list(raw_dir.glob("*.pdf")):
+        console.print(f"[cyan]Found PDFs in {raw_dir}. Indexing...[/cyan]")
+        n = pipeline.index_directory(raw_dir)
+        console.print(f"[green]✓ {n} chunks indexed[/green]")
+    else:
+        console.print(
+            "[yellow]No PDFs found in data/raw/. "
+            "Run: python data/download_samples.py[/yellow]"
+        )
+        return
+
+    sources = pipeline.get_indexed_sources()
+    console.print(f"\n[dim]Indexed documents: {sources}[/dim]\n")
+
+    console.print("[bold]Type your question (or 'quit' to exit):[/bold]\n")
+
+    while True:
+        try:
+            question = input("You: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            break
+
+        if question.lower() in ("quit", "exit", "q"):
+            break
+        if not question:
+            continue
+
+        console.print("\n[cyan]Retrieving and generating...[/cyan]")
+        response = pipeline.query(question)
+
+        console.print(Panel(
+            response.answer,
+            title=f"[green]Answer[/green]  [dim]({response.latency_s:.1f}s | {response.num_chunks_retrieved} chunks)[/dim]",
+            border_style="green",
+        ))
+
+        console.print("[dim]Sources:[/dim]")
+        for i, s in enumerate(response.sources, 1):
+            console.print(f"  [{i}] {s.get('source', '?')} — {s.get('text', '')[:70]}...")
+        console.print()
 
 
 if __name__ == "__main__":
-    print(f"Indexed {index_documents()} document chunks.")
+    main()
