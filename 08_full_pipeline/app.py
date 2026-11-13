@@ -25,18 +25,16 @@ import gradio as gr  # noqa: E402
 from src.config_loader import load_config  # noqa: E402
 
 APP_CONFIG = load_config()
-STEP_LABELS = [
-    "01 - Document Loading",
-    "02 - Chunking",
-    "03 - Embeddings",
-    "04 - Vector Database",
-    "05 - Retrieval",
-    "06 - Prompting",
-    "07 - LLM Integration",
-    "08 - Full Pipeline",
-    "09 - Evaluation",
-    "10 - Advanced Techniques",
-]
+PAGE_LABELS = ["Documents", "Ask Questions", "About"]
+DEFAULT_TOP_K = APP_CONFIG.get("retrieval", {}).get("top_k", 5)
+_llm_config = APP_CONFIG.get("llm", {})
+_llm_provider = _llm_config.get("provider", "ollama")
+_api_key_env = _llm_config.get(_llm_provider, {}).get("api_key_env")
+LLM_SETUP_NOTE = (
+    f"Question answering requires {_api_key_env} in your `.env` file."
+    if _api_key_env and not os.getenv(_api_key_env)
+    else ""
+)
 
 def _imp(mp, a):
     spec = importlib.util.spec_from_file_location(a, Path(_ROOT) / mp)
@@ -84,104 +82,66 @@ def upload_and_index(files, status_text: str) -> tuple[str, str]:
         p = get_pipeline()
     except Exception as exc:
         return f"Pipeline setup failed: {exc}", status_text
-    total = 0
     indexed_names = []
 
     for file_obj in files:
         file_path = getattr(file_obj, "name", file_obj)  # str path (Gradio 5+) or file object
         try:
-            n = p.index_file(file_path)
-            total += n
+            p.index_file(file_path)
             indexed_names.append(Path(file_path).name)
         except Exception as e:
-            return f"❌ Error indexing {Path(file_path).name}: {e}", status_text
+            return f"Could not add {Path(file_path).name}: {e}", status_text
 
     sources = p.get_indexed_sources()
     sources_str = "\n".join(f"• {s}" for s in sources) if sources else "None"
-    status = f"✅ Indexed {total} chunks from {len(indexed_names)} file(s).\n\nIndexed documents:\n{sources_str}"
+    document_word = "document" if len(indexed_names) == 1 else "documents"
+    status = f"Added {len(indexed_names)} {document_word} to your knowledge base."
     return status, sources_str
 
 
-def answer_question(
-    question: str,
-    history: list,
-    top_k: int,
-    show_sources: bool,
-) -> tuple[list, str]:
-    """
-    Called when the user submits a question.
-    Returns updated chat history and sources text.
-    """
+def answer_question(question: str, history: list) -> tuple[list, str]:
     if not question.strip():
         return history, ""
 
-    p = get_pipeline()
+    try:
+        p = get_pipeline()
+    except Exception as exc:
+        return history + _turn(question, f"Pipeline setup failed: {exc}"), ""
 
-    # Check if anything is indexed
     sources_list = p.get_indexed_sources()
     if not sources_list:
-        history = history + _turn(question, "⚠️ No documents indexed yet. Please upload a PDF first.")
+        history = history + _turn(
+            question,
+            "No documents have been added yet. Upload a PDF in the Documents section first.",
+        )
         return history, ""
 
     try:
-        response = p.query(question, top_k=int(top_k))
-    except Exception as e:
-        history = history + _turn(question, f"❌ Error: {e}")
+        response = p.query(question, top_k=DEFAULT_TOP_K)
+    except Exception as exc:
+        history = history + _turn(question, f"Unable to answer the question: {exc}")
         return history, ""
 
-    # Build sources text
     sources_md = ""
-    if show_sources and response.sources:
-        lines = [f"**Sources ({response.num_chunks_retrieved} chunks retrieved | {response.latency_s:.1f}s):**\n"]
+    if response.sources:
+        lines = ["**Sources:**\n"]
         for i, s in enumerate(response.sources, 1):
-            text_preview = s.get("text", "")[:120].replace("\n", " ")
-            lines.append(f"**[{i}]** `{s.get('source', '?')}` — {text_preview}...")
+            lines.append(f"{i}. `{s.get('source', 'Unknown document')}`")
         sources_md = "\n".join(lines)
 
     history = history + _turn(question, response.answer)
     return history, sources_md
 
 
-def stream_answer(question: str, history: list, top_k: int):
-    """Stream tokens for a smoother demo experience."""
-    if not question.strip():
-        yield history, ""
-        return
-
-    try:
-        p = get_pipeline()
-    except Exception as exc:
-        history = history + _turn(question, f"Pipeline setup failed: {exc}")
-        yield history, ""
-        return
-
-    if not p.get_indexed_sources():
-        history = history + _turn(question, "⚠️ No documents indexed yet. Please upload a PDF first.")
-        yield history, ""
-        return
-
-    history = history + _turn(question, "")
-    collected = ""
-
-    try:
-        for token in p.stream_query(question, top_k=int(top_k)):
-            collected += token
-            history[-1] = {"role": "assistant", "content": collected}
-            yield history, ""
-    except Exception as e:
-        history[-1] = {"role": "assistant", "content": f"❌ Error: {e}"}
-        yield history, ""
-
-
-def reset_index() -> tuple[str, str, list]:
+def reset_index() -> tuple[str, str, list, str]:
     """Clear the entire index."""
     p = get_pipeline()
     p.reset_index()
-    return "🗑️ Index cleared. Upload new documents to start fresh.", "", []
+    return "Knowledge base cleared. Upload documents to start again.", "", [], ""
 
 
-def show_step(step: str) -> list:
-    return [gr.update(visible=(label == step)) for label in STEP_LABELS]
+def show_page(page: str) -> list:
+    return [gr.update(visible=(label == page)) for label in PAGE_LABELS]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -226,10 +186,10 @@ CSS = """
     color: #312e81;
     margin-top: 0;
 }
-#step-content {
+#page-content {
     min-width: 0;
 }
-.step-panel {
+.page-panel {
     background: #ffffff;
     border: 1px solid #e2e8f0;
     border-radius: 12px;
@@ -254,172 +214,88 @@ with gr.Blocks(title="RAG Knowledge Assistant") as demo:
 
     with gr.Row(elem_id="app-layout"):
         with gr.Column(scale=1, min_width=220, elem_id="sidebar"):
-            gr.Markdown("### Pipeline Steps")
-            step_nav = gr.Radio(
-                choices=STEP_LABELS,
-                value=STEP_LABELS[0],
-                label="Navigate",
-                elem_id="step-navigation",
+            gr.Markdown("### Your Workspace")
+            page_nav = gr.Radio(
+                choices=PAGE_LABELS,
+                value=PAGE_LABELS[0],
+                label="Menu",
+                elem_id="page-navigation",
             )
-            gr.Markdown("Work through each stage from document loading to evaluation.")
+            gr.Markdown("Upload your files, then ask questions about them.")
 
-        with gr.Column(scale=4, elem_id="step-content"):
-            with gr.Column(visible=True, elem_classes=["step-panel"]) as documents_page:
+        with gr.Column(scale=4, elem_id="page-content"):
+            with gr.Column(visible=True, elem_classes=["page-panel"]) as documents_page:
                 gr.Markdown("""
-## 01 - Document Loading
-Upload PDF files to extract their text and add them to the local knowledge base.
+## Your Documents
+Upload PDF files to make them available for questions.
                 """)
                 with gr.Row():
                     with gr.Column(scale=2):
                         file_input = gr.File(
-                            label="Upload PDF files",
+                            label="Choose PDF files",
                             file_count="multiple",
                             file_types=[".pdf"],
                         )
-                        upload_btn = gr.Button("Index Documents", variant="primary")
-                        reset_btn = gr.Button("Reset Index", variant="stop")
+                        upload_btn = gr.Button("Add Documents", variant="primary")
+                        clear_documents_btn = gr.Button("Clear All Documents", variant="stop")
                     with gr.Column(scale=3):
                         index_status = gr.Textbox(
-                            label="Indexing Status",
-                            lines=8,
-                            interactive=False,
-                            placeholder="Upload files and click Index...",
-                        )
-                        sources_display = gr.Textbox(
-                            label="Indexed Sources",
+                            label="Upload Status",
                             lines=4,
                             interactive=False,
-                            placeholder="No documents indexed yet.",
+                            placeholder="Choose files and click Add Documents.",
+                        )
+                        sources_display = gr.Textbox(
+                            label="Available Documents",
+                            lines=8,
+                            interactive=False,
+                            placeholder="No documents uploaded yet.",
                         )
 
-            with gr.Column(visible=False, elem_classes=["step-panel"]) as chunking_page:
+            with gr.Column(visible=False, elem_classes=["page-panel"]) as questions_page:
                 gr.Markdown("""
-## 02 - Chunking
-Documents are split into overlapping text chunks before embedding. Adjust the active strategy in `config.yaml`.
+## Ask Questions
+Ask a question about the documents you have added. Answers are based on the information found in those files.
                 """)
-                gr.JSON(label="Active chunking settings", value=APP_CONFIG.get("chunking", {}))
-
-            with gr.Column(visible=False, elem_classes=["step-panel"]) as embeddings_page:
-                gr.Markdown("""
-## 03 - Embeddings
-The embedding model turns each chunk into a vector so semantically similar text can be retrieved.
-                """)
-                gr.JSON(label="Embedding settings", value=APP_CONFIG.get("embeddings", {}))
-
-            with gr.Column(visible=False, elem_classes=["step-panel"]) as vector_db_page:
-                gr.Markdown("""
-## 04 - Vector Database
-Vectors and their source text are persisted in the configured vector database.
-                """)
-                gr.JSON(label="Vector database settings", value=APP_CONFIG.get("vector_db", {}))
-
-            with gr.Column(visible=False, elem_classes=["step-panel"]) as retrieval_page:
-                gr.Markdown("""
-## 05 - Retrieval
-Ask a question to retrieve relevant chunks. The configured top-k and retrieval strategy are shown below.
-                """)
-                with gr.Row():
-                    with gr.Column(scale=3):
-                        chatbot = gr.Chatbot(label="Conversation", height=450)
-                        with gr.Row():
-                            question_box = gr.Textbox(
-                                label="Your Question",
-                                placeholder="Ask about your indexed documents...",
-                                scale=5,
-                            )
-                            ask_btn = gr.Button("Ask", variant="primary", scale=1)
-                    with gr.Column(scale=2):
-                        top_k_slider = gr.Slider(
-                            minimum=1,
-                            maximum=20,
-                            value=APP_CONFIG.get("retrieval", {}).get("top_k", 5),
-                            step=1,
-                            label="Top-K chunks",
-                            info="Number of relevant chunks to retrieve",
-                        )
-                        clear_btn = gr.Button("Clear Chat")
-                        sources_out = gr.Markdown(
-                            label="Retrieved Sources",
-                            elem_classes=["source-box"],
-                        )
-                gr.JSON(label="Retrieval settings", value=APP_CONFIG.get("retrieval", {}))
-
-            with gr.Column(visible=False, elem_classes=["step-panel"]) as prompting_page:
-                gr.Markdown("""
-## 06 - Prompting
-The prompt combines the question with retrieved context and instructs the model to ground its answer in that context.
-                """)
-                gr.JSON(label="Prompt settings", value=APP_CONFIG.get("prompting", {}))
-
-            with gr.Column(visible=False, elem_classes=["step-panel"]) as llm_page:
-                gr.Markdown("""
-## 07 - LLM Integration
-The language model generates the answer after retrieval. Document loading and indexing do not require an LLM API key.
-                """)
-                gr.JSON(
-                    label="LLM settings (no secrets shown)",
-                    value=APP_CONFIG.get("llm", {}),
-                )
-                llm_config = APP_CONFIG.get("llm", {})
-                llm_provider = llm_config.get("provider", "ollama")
-                llm_provider_config = llm_config.get(llm_provider, {})
-                key_env = llm_provider_config.get("api_key_env")
-                if key_env and not os.getenv(key_env):
+                if LLM_SETUP_NOTE:
                     gr.Markdown(
-                        f"**Setup needed for questions:** set `{key_env}` in `.env`. "
-                        "Indexing documents will still work without it."
+                        f"**Setup needed:** {LLM_SETUP_NOTE} "
+                        "You can still upload and prepare documents without it."
                     )
+                chatbot = gr.Chatbot(label="Conversation", height=450)
+                with gr.Row():
+                    question_box = gr.Textbox(
+                        label="Your Question",
+                        placeholder="Ask something about your documents...",
+                        scale=5,
+                    )
+                    ask_btn = gr.Button("Ask", variant="primary", scale=1)
+                clear_chat_btn = gr.Button("Clear Conversation")
+                sources_out = gr.Markdown(
+                    label="Sources",
+                    elem_classes=["source-box"],
+                )
 
-            with gr.Column(visible=False, elem_classes=["step-panel"]) as pipeline_page:
+            with gr.Column(visible=False, elem_classes=["page-panel"]) as about_page:
                 gr.Markdown("""
-## 08 - Full Pipeline
-The complete query flow is:
+## About RAG Knowledge Assistant
+Use this app to search your PDF documents and get answers grounded in their contents.
 
-1. Embed the question.
-2. Retrieve the most relevant chunks.
-3. Build a context-grounded prompt.
-4. Generate an answer with the configured LLM.
-
-Use the **Document Loading** step to index files and **Retrieval** to ask questions.
+### Getting started
+1. Open **Documents** and add one or more PDF files.
+2. Open **Ask Questions** and enter your question.
+3. Check the listed sources to see which documents informed the answer.
                 """)
+                if LLM_SETUP_NOTE:
+                    gr.Markdown(f"To generate answers, {LLM_SETUP_NOTE}")
 
-            with gr.Column(visible=False, elem_classes=["step-panel"]) as evaluation_page:
-                gr.Markdown("""
-## 09 - Evaluation
-Evaluate retrieval and answer quality with the RAGAS evaluation module. Configure the evaluation dataset and metrics in `config.yaml`, then run:
-
-```powershell
-python .\\09_evaluation\\evaluator.py
-```
-                """)
-
-            with gr.Column(visible=False, elem_classes=["step-panel"]) as advanced_page:
-                gr.Markdown("""
-## 10 - Advanced Techniques
-Explore hybrid retrieval, reranking, and alternate chunking strategies by changing the project configuration.
-
-This application is the interactive companion to **RAG From Scratch**. The project includes document loading, chunking, embeddings, vector storage, retrieval, prompting, LLM integration, evaluation, and advanced RAG modules.
-                """)
-                gr.JSON(label="Advanced retrieval settings", value=APP_CONFIG.get("retrieval", {}))
-
-    step_pages = [
-        documents_page,
-        chunking_page,
-        embeddings_page,
-        vector_db_page,
-        retrieval_page,
-        prompting_page,
-        llm_page,
-        pipeline_page,
-        evaluation_page,
-        advanced_page,
-    ]
+    pages = [documents_page, questions_page, about_page]
 
     # ── Event wiring ────────────────────────────────────────────────────────────
-    step_nav.change(
-        fn=show_step,
-        inputs=step_nav,
-        outputs=step_pages,
+    page_nav.change(
+        fn=show_page,
+        inputs=page_nav,
+        outputs=pages,
     )
 
     upload_btn.click(
@@ -428,24 +304,24 @@ This application is the interactive companion to **RAG From Scratch**. The proje
         outputs=[index_status, sources_display],
     )
 
-    reset_btn.click(
+    clear_documents_btn.click(
         fn=reset_index,
-        outputs=[index_status, sources_display, chatbot],
+        outputs=[index_status, sources_display, chatbot, sources_out],
     )
 
     ask_btn.click(
-        fn=stream_answer,
-        inputs=[question_box, chatbot, top_k_slider],
+        fn=answer_question,
+        inputs=[question_box, chatbot],
         outputs=[chatbot, sources_out],
     )
 
     question_box.submit(
-        fn=stream_answer,
-        inputs=[question_box, chatbot, top_k_slider],
+        fn=answer_question,
+        inputs=[question_box, chatbot],
         outputs=[chatbot, sources_out],
     )
 
-    clear_btn.click(fn=lambda: [], outputs=[chatbot])
+    clear_chat_btn.click(fn=lambda: ([], ""), outputs=[chatbot, sources_out])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
