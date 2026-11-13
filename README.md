@@ -1,4 +1,4 @@
-# RAG From Scratch: Build Your First Retrieval-Augmented Generation Pipeline
+# RAG for responsing query in user: Build Your First Retrieval-Augmented Generation Pipeline
 
 A complete, runnable Retrieval-Augmented Generation (RAG) project in 10 small modules. Every step is a separate script you can run on its own and see the output. Everything is open source, and **no API key is required** (local embeddings + local LLM through Ollama).
 
