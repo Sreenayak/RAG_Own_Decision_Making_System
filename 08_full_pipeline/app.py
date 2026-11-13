@@ -162,19 +162,36 @@ def reset_index() -> tuple[str, str, list]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 CSS = """
-#header { text-align: center; padding: 1rem 0 0.5rem; }
-#header h1 { font-size: 1.8rem; margin: 0; }
-#header p  { color: #666; margin: 0.3rem 0 0; }
-.source-box { background: #f7f8fa; border-radius: 6px; padding: 0.8rem; font-size: 0.85rem; }
+#header {
+    text-align: center;
+    padding: 1.5rem 0 1rem;
+}
+#header h1 {
+    color: #312e81;
+    font-size: 2rem;
+    letter-spacing: -0.03em;
+    margin: 0;
+}
+#header p {
+    color: #475569;
+    margin: 0.45rem 0 0;
+}
+.source-box {
+    background: #f1f5f9;
+    border: 1px solid #cbd5e1;
+    border-radius: 10px;
+    padding: 0.9rem;
+    font-size: 0.9rem;
+}
 """
 
-with gr.Blocks(title="RAG From Scratch") as demo:
+with gr.Blocks(title="RAG Knowledge Assistant") as demo:
 
     # ── Header ─────────────────────────────────────────────────────────────────
     gr.HTML("""
         <div id="header">
-            <h1>📚 RAG From Scratch</h1>
-            <p>Build Your First Retrieval-Augmented Generation Pipeline</p>
+            <h1>📚 RAG Knowledge Assistant</h1>
+            <p>Ask grounded questions about your documents</p>
         </div>
     """)
 
@@ -298,7 +315,7 @@ User Question
         # ── Tab 4: About ───────────────────────────────────────────────────────
         with gr.Tab("ℹ️ About"):
             gr.Markdown("""
-## RAG From Scratch
+## RAG Knowledge Assistant
 
 This application is the **hands-on working project** for
 *"RAG From Scratch: Build Your First Retrieval-Augmented Generation Pipeline"*.
@@ -382,7 +399,11 @@ python 08_full_pipeline/app.py
 
 if __name__ == "__main__":
     demo.launch(
-        theme=gr.themes.Soft(primary_hue="blue"),
+        theme=gr.themes.Soft(
+            primary_hue="indigo",
+            secondary_hue="cyan",
+            neutral_hue="slate",
+        ),
         css=CSS,
         server_name="0.0.0.0",
         server_port=7860,
