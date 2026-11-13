@@ -14,7 +14,7 @@ _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
 def load_config(path: str | None = None) -> dict:
     """Load config.yaml and resolve env-var secrets."""
     cfg_path = Path(path) if path else _CONFIG_PATH
-    with open(cfg_path, "r") as f:
+    with open(cfg_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     return cfg
 

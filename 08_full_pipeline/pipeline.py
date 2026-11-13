@@ -93,6 +93,7 @@ class RAGPipeline:
         self._indexed_chunks: list[Chunk] = []
         self._store = None
         self._retriever = None
+        self._llm = None
         self._setup_components()
 
     def _setup_components(self):
@@ -130,14 +131,22 @@ class RAGPipeline:
             max_context_tokens=prompt_cfg.get("max_context_tokens", 3000),
         )
 
-        # LLM
-        get_llm = _import("07_llm_integration/llm_client.py", "get_llm")
-        self._llm = get_llm(cfg["llm"])
-
-        print(f"\n[pipeline] ✓ All components ready")
+        print("\n[pipeline] Indexing components ready")
         print(f"  Embedder : {self._embedder.__class__.__name__}")
         print(f"  Store    : {self._store.__class__.__name__}")
-        print(f"  LLM      : {self._llm.model_name}")
+        print(f"  LLM      : {cfg['llm'].get('provider', 'ollama')} (loaded on first query)")
+
+    def _get_llm(self):
+        if self._llm is None:
+            get_llm = _import("07_llm_integration/llm_client.py", "get_llm")
+            self._llm = get_llm(self._cfg["llm"])
+        return self._llm
+
+    def _configured_model_name(self) -> str:
+        llm_cfg = self._cfg.get("llm", {})
+        provider = llm_cfg.get("provider", "ollama")
+        model = llm_cfg.get(provider, {}).get("model", "unknown")
+        return f"{provider}/{model}"
 
     def _build_store(self, cfg: dict):
         db_cfg = cfg["vector_db"]
@@ -210,7 +219,7 @@ class RAGPipeline:
         self._store.add_chunks(all_chunks, embeddings)
 
         self._indexed_chunks.extend(all_chunks)
-        print(f"[pipeline] ✓ Indexed {len(all_chunks)} chunks from {len(docs)} document(s)")
+        print(f"[pipeline] Indexed {len(all_chunks)} chunks from {len(docs)} document(s)")
         return len(all_chunks)
 
     # ── Querying ──────────────────────────────────────────────────────────────
@@ -241,7 +250,7 @@ class RAGPipeline:
                 answer="I could not find relevant information in the indexed documents.",
                 sources=[],
                 latency_s=time.perf_counter() - t_start,
-                model=self._llm.model_name,
+                model=self._configured_model_name(),
                 num_chunks_retrieved=0,
             )
 
@@ -249,7 +258,8 @@ class RAGPipeline:
         messages = self._prompt_builder.format_messages(question, chunks)
 
         # Generation
-        answer = self._llm.generate(messages)
+        llm = self._get_llm()
+        answer = llm.generate(messages)
 
         latency = time.perf_counter() - t_start
 
@@ -258,7 +268,7 @@ class RAGPipeline:
             answer=answer,
             sources=chunks,
             latency_s=latency,
-            model=self._llm.model_name,
+            model=llm.model_name,
             num_chunks_retrieved=len(chunks),
         )
 
@@ -276,7 +286,7 @@ class RAGPipeline:
             return
 
         messages = self._prompt_builder.format_messages(question, chunks)
-        yield from self._llm.stream(messages)
+        yield from self._get_llm().stream(messages)
 
     def _get_retriever(self):
         """Build the retriever configured in config.yaml."""
@@ -355,7 +365,7 @@ def main():
     if raw_dir.exists() and list(raw_dir.glob("*.pdf")):
         console.print(f"[cyan]Found PDFs in {raw_dir}. Indexing...[/cyan]")
         n = pipeline.index_directory(raw_dir)
-        console.print(f"[green]✓ {n} chunks indexed[/green]")
+        console.print(f"[green]{n} chunks indexed[/green]")
     else:
         console.print(
             "[yellow]No PDFs found in data/raw/. "
