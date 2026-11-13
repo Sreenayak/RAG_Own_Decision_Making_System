@@ -1,431 +1,204 @@
-
 """
-Module 01: Document Loading
-Project: RAG_Own_Decision_Making
+Module 1 — Document Loading with IBM Docling
+=============================================
+Docling is an IBM open-source library that extracts richly structured content
+from PDFs (including tables, headers, page numbers) and many other formats.
 
-Responsibilities:
-1. Discover PDF files in data/raw/
-2. Extract text page by page
-3. Extract document metadata
-4. Handle corrupted and empty PDFs
-5. Support pypdf and optional Docling
-6. Save extracted records into data/processed/documents.jsonl
+Supported input formats:
+    • PDF  (digital + scanned via OCR)
+    • DOCX / PPTX / XLSX
+    • HTML / Markdown
+    • Images (PNG, JPEG)
+
+What this module teaches:
+    1. What a "Document" object is (content + metadata)
+    2. How Docling preserves document structure (tables, headings, lists)
+    3. Batch loading an entire folder of PDFs
+    4. Exporting to Markdown for downstream chunking
 """
 
-import json
-import logging
+from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
-from datetime import datetime, timezone
-from typing import Optional
+from typing import Iterator
 
-from pypdf import PdfReader
+# Add repo root to path for src imports
+_ROOT = str(Path(__file__).parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
+from src.models import Document  # noqa: E402
 
-# ==========================================================
-# 1. PROJECT PATH CONFIGURATION
-# ==========================================================
-
-# Get the root directory of the project
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-# Input directory containing PDF documents
-RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
-
-# Output directory for extracted documents
-PROCESSED_DATA_DIR = PROJECT_ROOT / "data" / "processed"
-
-# Output JSONL file
-OUTPUT_FILE = PROCESSED_DATA_DIR / "documents.jsonl"
+# ── Docling imports ───────────────────────────────────────────────────────────
+from docling.document_converter import DocumentConverter
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import PdfFormatOption
 
 
-# ==========================================================
-# 2. LOGGING CONFIGURATION
-# ==========================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# Loader
+# ─────────────────────────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(levelname)s: %(message)s"
-)
-
-logger = logging.getLogger(__name__)
-
-
-# ==========================================================
-# 3. DOCUMENT LOADER CLASS
-# ==========================================================
-
-class DocumentLoader:
+class DoclingLoader:
     """
-    Loads PDF documents and extracts their text and metadata.
+    Load one or many documents using IBM Docling.
+
+    Parameters
+    ----------
+    ocr        : Enable OCR for scanned/image PDFs. Slower but handles scans.
+    table_mode : "fast" (default) or "accurate" for table extraction.
     """
 
-    def __init__(
-        self,
-        input_dir: Path = RAW_DATA_DIR,
-        output_file: Path = OUTPUT_FILE,
-        extraction_method: str = "pypdf"
-    ):
-
-        self.input_dir = Path(input_dir)
-        self.output_file = Path(output_file)
-
-        self.extraction_method = extraction_method.lower()
-
-        if self.extraction_method not in {"pypdf", "docling"}:
-            raise ValueError(
-                "Extraction method must be 'pypdf' or 'docling'."
-            )
-
-        self.documents = []
-
-        logger.info("Document Loader Initialized")
-        logger.info(f"Input Directory: {self.input_dir}")
-
-
-    # ======================================================
-    # 4. FIND ALL PDF DOCUMENTS
-    # ======================================================
-
-    def discover_documents(self) -> list[Path]:
-        """
-        Discover all PDF files inside the raw data directory.
-        """
-
-        if not self.input_dir.exists():
-            raise FileNotFoundError(
-                f"Input directory does not exist: {self.input_dir}"
-            )
-
-        pdf_files = sorted(
-            path for path in self.input_dir.rglob("*")
-            if path.is_file() and path.suffix.lower() == ".pdf"
+    def __init__(self, ocr: bool = False, table_mode: str = "fast"):
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.do_ocr = ocr
+        pipeline_options.do_table_structure = True
+        pipeline_options.table_structure_options.do_cell_matching = (
+            table_mode == "accurate"
         )
 
-        if not pdf_files:
-            logger.warning("No PDF documents found.")
+        self._converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+            }
+        )
 
-        else:
-            logger.info(f"Found {len(pdf_files)} PDF documents.")
+    # ── Public API ────────────────────────────────────────────────────────────
 
-        return pdf_files
+    def load_file(self, path: str | Path) -> Document:
+        """Load a single file and return a Document."""
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {path}")
 
+        print(f"[docling] Converting: {path.name} ...")
+        result = self._converter.convert(str(path))
 
-    # ======================================================
-    # 5. EXTRACT METADATA
-    # ======================================================
+        # Export as Markdown — preserves headings, tables, lists
+        content_md = result.document.export_to_markdown()
 
-    def extract_metadata(
-        self,
-        pdf_path: Path,
-        reader: PdfReader,
-        page_number: Optional[int] = None
-    ) -> dict:
-        """
-        Extract document information and source details.
-        """
-
-        pdf_metadata = reader.metadata
+        # num_pages is a method in recent Docling versions, an int in older ones
+        num_pages = getattr(result.document, "num_pages", None)
+        if callable(num_pages):
+            num_pages = num_pages()
 
         metadata = {
-            "source": pdf_path.name,
-            "file_path": str(pdf_path.relative_to(PROJECT_ROOT)),
-            "file_type": "pdf",
-            "title": (
-                str(pdf_metadata.title)
-                if pdf_metadata and pdf_metadata.title
-                else pdf_path.stem
-            ),
-            "author": (
-                str(pdf_metadata.author)
-                if pdf_metadata and pdf_metadata.author
-                else "Unknown"
-            ),
-            "page": page_number,
-            "total_pages": len(reader.pages),
-            "extraction_method": self.extraction_method,
-            "loaded_at": datetime.now(timezone.utc).isoformat()
+            "source": str(path),
+            "filename": path.name,
+            "format": path.suffix.lower().lstrip("."),
+            "num_pages": num_pages,
+            "title": self._extract_title(result.document),
         }
 
-        return metadata
+        return Document(content=content_md, source=str(path), metadata=metadata)
 
-
-    # ======================================================
-    # 6. LOAD PDF USING PYPDF
-    # ======================================================
-
-    def load_with_pypdf(self, pdf_path: Path) -> list[dict]:
-        """
-        Extract text page by page using pypdf.
-        """
-
-        logger.info(f"Loading: {pdf_path.name}")
-
-        extracted_documents = []
-
-        try:
-
-            reader = PdfReader(str(pdf_path), strict=False)
-
-            if reader.is_encrypted:
-                try:
-                    result = reader.decrypt("")
-                    if not result:
-                        logger.error(
-                            f"Password-protected PDF skipped: {pdf_path.name}"
-                        )
-                        return []
-                except Exception as error:
-                    logger.error(
-                        f"Unable to decrypt {pdf_path.name}: {error}"
-                    )
-                    return []
-
-            total_pages = len(reader.pages)
-
-            for page_index, page in enumerate(reader.pages):
-
-                try:
-
-                    # Extract text from the current page
-                    text = page.extract_text() or ""
-
-                    text = text.strip()
-
-                    # Ignore pages without extractable text
-                    if not text:
-                        logger.warning(
-                            f"Empty page {page_index + 1}: {pdf_path.name}"
-                        )
-                        continue
-
-                    # Extract page metadata
-                    metadata = self.extract_metadata(
-                        pdf_path,
-                        reader,
-                        page_number=page_index + 1
-                    )
-
-                    # Store extracted content
-                    document = {
-                        "text": text,
-                        "metadata": metadata
-                    }
-
-                    extracted_documents.append(document)
-
-                except Exception as error:
-
-                    logger.error(
-                        f"Page {page_index + 1} failed "
-                        f"in {pdf_path.name}: {error}"
-                    )
-
-            logger.info(
-                f"Extracted {len(extracted_documents)} "
-                f"pages from {pdf_path.name} "
-                f"(total pages: {total_pages})"
-            )
-
-        except Exception as error:
-
-            logger.error(
-                f"Failed to load {pdf_path.name}: {error}"
-            )
-
-        return extracted_documents
-
-
-    # ======================================================
-    # 7. LOAD PDF USING DOCLING (OPTIONAL)
-    # ======================================================
-
-    def load_with_docling(self, pdf_path: Path) -> list[dict]:
-        """
-        Extract structured document text using IBM Docling.
-
-        Note:
-        Docling returns the converted document as Markdown.
-        This implementation stores it as one document record.
-        """
-
-        try:
-
-            from docling.document_converter import DocumentConverter
-
-            logger.info(f"Loading with Docling: {pdf_path.name}")
-
-            converter = DocumentConverter()
-
-            result = converter.convert(str(pdf_path))
-
-            markdown_text = result.document.export_to_markdown()
-
-            if not markdown_text.strip():
-                logger.warning(
-                    f"No text extracted from {pdf_path.name}"
-                )
-                return []
-
-            document = {
-                "text": markdown_text,
-                "metadata": {
-                    "source": pdf_path.name,
-                    "file_path": str(pdf_path.relative_to(PROJECT_ROOT)),
-                    "file_type": "pdf",
-                    "title": pdf_path.stem,
-                    "author": "Unknown",
-                    "page": None,
-                    "total_pages": None,
-                    "extraction_method": "docling",
-                    "loaded_at": datetime.now(timezone.utc).isoformat()
-                }
-            }
-
-            logger.info(
-                f"Successfully extracted {pdf_path.name} using Docling"
-            )
-
-            return [document]
-
-        except ImportError:
-
-            logger.error(
-                "Docling is not installed. Run: pip install docling"
-            )
+    def load_directory(
+        self,
+        directory: str | Path,
+        glob: str = "**/*.pdf",
+    ) -> list[Document]:
+        """Load all matching files in a directory (recursive by default)."""
+        directory = Path(directory)
+        files = list(directory.glob(glob))
+        if not files:
+            print(f"[warn] No files matched '{glob}' in {directory}")
             return []
 
-        except Exception as error:
+        print(f"[docling] Found {len(files)} file(s) in {directory}")
+        docs = []
+        for fp in files:
+            try:
+                docs.append(self.load_file(fp))
+            except Exception as exc:
+                print(f"[error] Failed to load {fp.name}: {exc}")
+        return docs
 
-            logger.error(
-                f"Docling extraction failed for {pdf_path.name}: {error}"
-            )
-            return []
-
-
-    # ======================================================
-    # 8. LOAD ALL DOCUMENTS
-    # ======================================================
-
-    def load_all_documents(self) -> list[dict]:
-        """
-        Load every PDF document from the input directory.
-        """
-
-        pdf_files = self.discover_documents()
-
-        self.documents = []
-
-        for pdf_path in pdf_files:
-
-            if self.extraction_method == "pypdf":
-
-                extracted = self.load_with_pypdf(pdf_path)
-
-            else:
-
-                extracted = self.load_with_docling(pdf_path)
-
-            self.documents.extend(extracted)
-
-        logger.info(
-            f"Total extracted document records: {len(self.documents)}"
-        )
-
-        return self.documents
-
-
-    # ======================================================
-    # 9. SAVE EXTRACTED DOCUMENTS
-    # ======================================================
-
-    def save_documents(self) -> None:
-        """
-        Save extracted text and metadata in JSON Lines format.
-        """
-
-        if not self.documents:
-            logger.warning("No extracted documents to save.")
-            return
-
-        self.output_file.parent.mkdir(
-            parents=True,
-            exist_ok=True
-        )
-
-        with self.output_file.open(
-            "w",
-            encoding="utf-8"
-        ) as file:
-
-            for document in self.documents:
-
-                file.write(
-                    json.dumps(
-                        document,
-                        ensure_ascii=False
-                    ) + "\n"
-                )
-
-        logger.info(
-            f"Documents saved successfully: {self.output_file}"
-        )
-
-
-    # ======================================================
-    # 10. DISPLAY PROCESSING SUMMARY
-    # ======================================================
-
-    def display_summary(self) -> None:
-        """
-        Display document extraction statistics.
-        """
-
-        total_records = len(self.documents)
-
-        unique_sources = {
-            doc["metadata"]["source"]
-            for doc in self.documents
+    def load_url(self, url: str) -> Document:
+        """Load a document directly from a URL (HTML page or hosted PDF)."""
+        print(f"[docling] Fetching URL: {url} ...")
+        result = self._converter.convert(url)
+        content_md = result.document.export_to_markdown()
+        metadata = {
+            "source": url,
+            "filename": url.split("/")[-1],
+            "format": "url",
+            "title": self._extract_title(result.document),
         }
+        return Document(content=content_md, source=url, metadata=metadata)
 
-        total_characters = sum(
-            len(doc["text"])
-            for doc in self.documents
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _extract_title(doc) -> str:
+        """Try to extract a title from docling document metadata."""
+        try:
+            return doc.description.title or ""
+        except AttributeError:
+            return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Standalone demo / notebook entry point
+# ─────────────────────────────────────────────────────────────────────────────
+
+def demo():
+    """
+    Quick demo — load the sample PDFs in data/raw/ and print summaries.
+    Run: python 01_document_loading/loader.py
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    console.rule("[bold blue]Module 1 — Document Loading with Docling")
+
+    data_dir = Path(__file__).parent.parent / "data" / "raw"
+    loader = DoclingLoader(ocr=False, table_mode="fast")
+
+    pdfs = list(data_dir.glob("*.pdf"))
+    if not pdfs:
+        console.print(
+            "[yellow]No PDFs found in data/raw/. "
+            "Run: python data/download_samples.py first.[/yellow]"
         )
+        return
 
-        print("\n" + "=" * 55)
-        print("          DOCUMENT LOADING SUMMARY")
-        print("=" * 55)
+    docs = []
+    for pdf in pdfs:
+        doc = loader.load_file(pdf)
+        docs.append(doc)
 
-        print(f"PDF Files Processed : {len(unique_sources)}")
-        print(f"Extracted Records   : {total_records}")
-        print(f"Total Characters    : {total_characters:,}")
-        print(f"Output File         : {self.output_file}")
+    # Pretty table summary
+    table = Table(title="Loaded Documents", show_lines=True)
+    table.add_column("File", style="cyan")
+    table.add_column("Pages", justify="right")
+    table.add_column("Characters", justify="right")
+    table.add_column("Title")
 
-        print("=" * 55)
+    for d in docs:
+        table.add_row(
+            d.metadata["filename"],
+            str(d.metadata.get("num_pages", "?")),
+            f"{len(d.content):,}",
+            d.metadata.get("title", "—")[:60],
+        )
+    console.print(table)
+
+    # Save Markdown exports
+    out_dir = Path(__file__).parent.parent / "data" / "processed"
+    out_dir.mkdir(exist_ok=True)
+    for d in docs:
+        stem = Path(d.metadata["filename"]).stem
+        out_path = out_dir / f"{stem}.md"
+        out_path.write_text(d.content, encoding="utf-8")
+        console.print(f"[green]Saved:[/green] {out_path}")
+
+    console.print(f"\n[bold green]✓ Loaded {len(docs)} documents.[/bold green]")
+    return docs
 
 
-# ==========================================================
-# 11. MAIN EXECUTION
-# ==========================================================
-
-def main():
-
-    # Initialize the document loader
-    loader = DocumentLoader(
-        extraction_method="pypdf"
-    )
-
-    # Discover and extract all PDF documents
-    loader.load_all_documents()
-
-    # Save extracted text and metadata
-    loader.save_documents()
-
-    # Display processing statistics
-    loader.display_summary()
-
-
-# Execute the program
 if __name__ == "__main__":
-    main()
+    demo()
