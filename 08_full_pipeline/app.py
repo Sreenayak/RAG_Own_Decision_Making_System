@@ -99,14 +99,14 @@ def upload_and_index(files, status_text: str) -> tuple[str, str]:
     return status, sources_str
 
 
-def answer_question(question: str, history: list) -> tuple[list, str]:
+def answer_question(question: str, history: list) -> tuple[list, str, str]:
     if not question.strip():
-        return history, ""
+        return history, "", ""
 
     try:
         p = get_pipeline()
     except Exception as exc:
-        return history + _turn(question, f"Pipeline setup failed: {exc}"), ""
+        return history + _turn(question, f"Pipeline setup failed: {exc}"), "", ""
 
     sources_list = p.get_indexed_sources()
     if not sources_list:
@@ -114,13 +114,13 @@ def answer_question(question: str, history: list) -> tuple[list, str]:
             question,
             "No documents have been added yet. Upload a PDF in the Documents section first.",
         )
-        return history, ""
+        return history, "", ""
 
     try:
         response = p.query(question, top_k=DEFAULT_TOP_K)
     except Exception as exc:
         history = history + _turn(question, f"Unable to answer the question: {exc}")
-        return history, ""
+        return history, "", ""
 
     sources_md = ""
     if response.sources:
@@ -130,7 +130,7 @@ def answer_question(question: str, history: list) -> tuple[list, str]:
         sources_md = "\n".join(lines)
 
     history = history + _turn(question, response.answer)
-    return history, sources_md
+    return history, sources_md, ""
 
 
 def reset_index() -> tuple[str, str, list, str]:
@@ -312,13 +312,13 @@ Use this app to search your PDF documents and get answers grounded in their cont
     ask_btn.click(
         fn=answer_question,
         inputs=[question_box, chatbot],
-        outputs=[chatbot, sources_out],
+        outputs=[chatbot, sources_out, question_box],
     )
 
     question_box.submit(
         fn=answer_question,
         inputs=[question_box, chatbot],
-        outputs=[chatbot, sources_out],
+        outputs=[chatbot, sources_out, question_box],
     )
 
     clear_chat_btn.click(fn=lambda: ([], ""), outputs=[chatbot, sources_out])

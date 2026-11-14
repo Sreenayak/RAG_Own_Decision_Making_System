@@ -538,3 +538,6 @@ Author: [Abhilasha Mangal](https://github.com/Abhilasha-Mangal)
 ## License
 
 MIT
+
+## Running this interface using this below command.
+.\.venv\Scripts\python.exe 08_full_pipeline\app.py
